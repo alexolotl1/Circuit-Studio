@@ -35,10 +35,10 @@
 .palette-list { display: grid; gap: 10px; }
 
 .main-area { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
-.workspace-wrap { display: flex; align-items: center; justify-content: center; width: 100%; }
+.workspace-wrap { display: flex; align-items: stretch; justify-content: center; width: 100%; gap: 16px; }
 
 /* White workspace square */
-#workspace { width: 700px; height: 700px; max-width: 90vmin; max-height: 90vmin; background: #fff; border: 2px solid #111827; border-radius: 8px; position: relative; overflow: hidden; box-shadow: 0 8px 16px rgba(0,0,0,0.06); }
+#workspace { width: 820px; height: 820px; max-width: 90vmin; max-height: 90vmin; background: #fff; border: 2px solid #111827; border-radius: 10px; position: relative; overflow: hidden; box-shadow: 0 12px 24px rgba(0,0,0,0.08); }
 
 /* Blocks */
 .block { user-select: none; -webkit-user-drag: none; cursor: grab; padding: 10px 12px; border-radius: 8px; border: 1px solid #d1d5db; background: #e5e7eb; color: #111827; font-size: 14px; line-height: 1; width: max-content; max-width: 160px; }
@@ -48,13 +48,97 @@
 .block.palette[data-type="led"] { background: #fee2e2; border-color: #fca5a5; }
 .block.palette[data-type="resistor"] { background: #dbeafe; border-color: #93c5fd; }
 .block.palette[data-type="battery"] { background: #dcfce7; border-color: #86efac; }
-.block.palette[data-type="wire"] { background: #f3e8ff; border-color: #d8b4fe; }
 
 /* Instances inside workspace */
 #workspace .block.instance { position: absolute; }
+
+/* Instance block styles by type (match palette look) */
+#workspace .block[data-type="led"] { background: #fee2e2; border-color: #fca5a5; }
+#workspace .block[data-type="resistor"] { background: #dbeafe; border-color: #93c5fd; }
+#workspace .block[data-type="battery"] { background: #dcfce7; border-color: #86efac; }
 
 /* Dragging clone that follows pointer before placement */
 .block.dragging { opacity: 0.85; pointer-events: none; }
 
 /* Helper focus ring when workspace is focused */
 #workspace:focus { outline: 3px solid #60a5fa; outline-offset: 2px; }
+
+.block .input {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #111827;
+  border-radius: 3px; /* square-ish */
+  top: 50%;
+  transform: translateY(-50%);
+}
+.block .input.left { left: -6px; }
+.block .input.right { right: -6px; }
+
+.wire-layer {
+  z-index: 0;
+}
+
+/* Position the SVG wire layer absolutely to fill the workspace */
+.wire-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+#workspace .block.instance {
+  z-index: 1;
+}
+
+.input {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: #111827;
+  border-radius: 3px;
+  top: 50%;
+  transform: translateY(-50%);
+  cursor: pointer;
+}
+
+.input.left { left: -6px; }
+.input.right { right: -6px; }
+
+.input.selected {
+  background: #3b82f6;
+  box-shadow: 0 0 4px #3b82f6;
+}
+
+/* LED powered state */
+.block[data-type="led"].powered {
+  background: #fffbeb; /* pale yellow */
+  border-color: #f59e0b;
+  box-shadow: 0 0 10px rgba(245,158,11,0.35);
+}
+
+/* Context menu minimal styling (created dynamically) */
+.ct-context-menu { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; position: absolute; background: #fff; border: 1px solid #ddd; padding: 6px 8px; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); font-size: 13px; z-index: 9999; display: none; }
+.ct-context-menu.visible { display: block; }
+.ct-context-menu #ct-delete { cursor: pointer; }
+.ct-context-menu .ct-edit { margin-top: 6px; display:flex; gap:6px; align-items:center }
+.ct-context-menu input[type="number"] { width: 80px; }
+
+/* Tooltip for component measurements */
+.ct-tooltip { position: absolute; background: rgba(0,0,0,0.85); color: #fff; padding: 6px 8px; border-radius: 6px; font-size: 12px; pointer-events: none; z-index: 99999; display: none; }
+.ct-tooltip.visible { display: block; }
+
+/* Properties panel */
+#properties { width: 260px; background: #f8fafc; border-left: 1px solid #e6e9ee; padding: 12px; }
+#properties h3 { margin: 0 0 8px; font-size: 16px }
+#prop-content { font-size: 13px; min-height: 120px; }
+.prop-actions { margin-top: 12px; display:flex; gap:8px }
+
+/* Small UI color tweaks */
+body { background: #f3f4f6; }
+.site-header { background: linear-gradient(90deg,#ffffff,#f8fafc); }
+
+/* Prevent text selection while moving */
+.ct-moving { user-select: none; -webkit-user-select: none; }

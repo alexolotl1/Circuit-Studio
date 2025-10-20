@@ -18,7 +18,6 @@
         <div class="block palette" data-type="led">LED</div>
         <div class="block palette" data-type="resistor">Resistor</div>
         <div class="block palette" data-type="battery">Battery</div>
-        <div class="block palette" data-type="wire">Wire</div>
       </div>
       <p class="hint">Drag a block into the workspace</p>
     </aside>
@@ -26,6 +25,16 @@
     <main class="main-area">
       <div class="workspace-wrap">
         <div id="workspace" role="region" aria-label="Workspace (blocks stay within this box)"></div>
+        <aside id="properties" aria-label="Properties panel">
+          <h3>Properties</h3>
+          <div id="prop-content">Select a block to edit properties</div>
+          <div class="prop-actions">
+            <button id="undo-btn">Undo</button>
+            <button id="save-btn">Save</button>
+            <input id="load-file" type="file" style="display:none" />
+            <button id="load-btn">Load</button>
+          </div>
+        </aside>
       </div>
     </main>
   </div>
