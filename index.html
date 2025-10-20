@@ -1,14 +1,35 @@
 <!DOCTYPE html>
-<html> 
-<head> 
-    <link rel="stylesheet" href="styles.css">
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Circuit Teach</title>
+  <link rel="stylesheet" href="styles.css" />
 </head>
-<body> 
-    <body>
-    <h1 id="main">Welcome to Circuit Teach</h1>
+<body>
+  <header class="site-header">
+    <h1 id="main">Circuit Teach</h1>
+  </header>
 
+  <div class="app">
+    <aside id="palette" aria-label="Block palette">
+      <h2>Blocks</h2>
+      <div class="palette-list">
+        <div class="block palette" data-type="led">LED</div>
+        <div class="block palette" data-type="resistor">Resistor</div>
+        <div class="block palette" data-type="battery">Battery</div>
+        <div class="block palette" data-type="wire">Wire</div>
+      </div>
+      <p class="hint">Drag a block into the workspace</p>
+    </aside>
 
+    <main class="main-area">
+      <div class="workspace-wrap">
+        <div id="workspace" role="region" aria-label="Workspace (blocks stay within this box)"></div>
+      </div>
+    </main>
+  </div>
 
-    </body>
-
-</body> 
+  <script src="script.js"></script>
+</body>
+</html>
