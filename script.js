@@ -173,6 +173,9 @@ function createBlockInstance(type) {
   leftInput.className = "input left";
   const rightInput = document.createElement("div");
   rightInput.className = "input right";
+  // mark visual polarity: right = anode (red), left = cathode (blue)
+  leftInput.classList.add('cathode');
+  rightInput.classList.add('anode');
 
   block.appendChild(leftInput);
   block.appendChild(rightInput);
@@ -396,6 +399,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
   if (loadFile) loadFile.onchange = e=>{
     const f = e.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = ev=>{ try{ importCircuit(JSON.parse(ev.target.result)); }catch(err){ console.error(err); } }; r.readAsText(f);
   };
+  // clear connector selection when clicking elsewhere
+  document.addEventListener('click', (ev) => {
+    if (selectedConnector && !ev.target.classList.contains('input')) {
+      try { selectedConnector.classList.remove('selected'); } catch(e) {}
+      selectedConnector = null;
+    }
+  });
 });
 
 function exportCircuit(){
@@ -434,16 +444,27 @@ function handleConnectorClick(e, connector) {
     // select the first connector
     selectedConnector = connector;
     connector.classList.add("selected");
-  } else if (selectedConnector === connector) {
-    // clicking same one cancels selection
+    return;
+  }
+  // clicking same one cancels selection
+  if (selectedConnector === connector) {
     connector.classList.remove("selected");
     selectedConnector = null;
-  } else {
-    // connect the two
-    createWire(selectedConnector, connector);
-    selectedConnector.classList.remove("selected");
-    selectedConnector = null;
+    return;
   }
+  // don't allow connecting two connectors on the same block
+  const aBlock = selectedConnector.closest('.block');
+  const bBlock = connector.closest('.block');
+  if (aBlock && bBlock && aBlock === bBlock) {
+    // same block — just deselect
+    selectedConnector.classList.remove('selected');
+    selectedConnector = null;
+    return;
+  }
+  // connect the two
+  createWire(selectedConnector, connector);
+  selectedConnector.classList.remove("selected");
+  selectedConnector = null;
 }
 
 // --- Draw a wire between two connectors ---
@@ -527,19 +548,11 @@ function getOtherConnector(conn) {
 
 // Evaluate circuits in the workspace and update component states (e.g., LEDs)
 function evaluateCircuit() {
-  // MNA nodal solver (supports resistors and independent voltage sources)
-  // Reset component measurement metadata
-  const blocks = workspace.querySelectorAll('.block');
-  blocks.forEach(b => {
-    delete b.dataset.current;
-    delete b.dataset.voltageDrop;
-    if (b.dataset.type === 'battery' && !b.dataset.voltage) b.dataset.voltage = 10;
-    if (b.dataset.type === 'resistor' && !b.dataset.resistance) b.dataset.resistance = 100;
-    if (b.dataset.type === 'led' && !b.dataset.forwardVoltage) b.dataset.forwardVoltage = 2;
-    if (b.dataset.type === 'led') { b.dataset.powered = 'false'; b.classList.remove('powered'); }
-  });
+  // Build blocks and reset metadata
+  const blocks = Array.from(workspace.querySelectorAll('.block'));
+  blocks.forEach(b => { delete b.dataset.current; delete b.dataset.voltageDrop; if (b.dataset.type === 'battery' && !b.dataset.voltage) b.dataset.voltage = 5; if (b.dataset.type === 'resistor' && !b.dataset.resistance) b.dataset.resistance = 100; if (b.dataset.type === 'led' && !b.dataset.forwardVoltage) b.dataset.forwardVoltage = 2; if (b.dataset.type === 'led') { b.dataset.powered = 'false'; b.classList.remove('powered'); } });
 
-  // build connector list and net ids using union-find (wires short connectors)
+  // Build connector list & nets using union-find of wires
   const connectorList = Array.from(workspace.querySelectorAll('.input'));
   const cIndex = new Map(connectorList.map((c,i) => [c,i]));
   const parent = connectorList.map((_,i) => i);
@@ -547,167 +560,49 @@ function evaluateCircuit() {
   function union(i,j){ const ri=find(i), rj=find(j); if(ri!==rj) parent[rj]=ri; }
   connections.forEach(c => { if (!c.conn1 || !c.conn2) return; const i=cIndex.get(c.conn1), j=cIndex.get(c.conn2); if (i!=null && j!=null) union(i,j); });
   const netId = connectorList.map((_,i) => find(i));
-
-  // map nets to indices (exclude nets with no components)
   const netMap = new Map(); let netCounter = 0;
-  function netForConnector(conn){ const idx = cIndex.get(conn); if (idx==null) return null; const r = netId[idx]; if (!netMap.has(r)) netMap.set(r, netCounter++); return netMap.get(r); }
+  function netFor(conn){ const idx = cIndex.get(conn); if (idx==null) return null; const r = netId[idx]; if (!netMap.has(r)) netMap.set(r, netCounter++); return netMap.get(r); }
 
-  // collect components and build MNA elements
+  // Collect elements for solver
   const resistors = []; const vSources = []; const diodes = [];
-  connectorList.forEach(() => {});
   blocks.forEach(b => {
     const left = b.querySelector('.input.left');
     const right = b.querySelector('.input.right');
     if (!left || !right) return;
-    const na = netForConnector(left);
-    const nb = netForConnector(right);
-    if (b.dataset.type === 'resistor') {
-      resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||0, block: b });
-    } else if (b.dataset.type === 'battery') {
-      vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||10, block: b });
-    } else if (b.dataset.type === 'led') {
-      // diode using Shockley equation: I = Is*(exp(Vd/nVt)-1)
-      // Note: choose orientation so the block's RIGHT connector is the diode anode
-      // and the LEFT connector is the diode cathode. This matches how batteries
-      // are stamped (right = positive, left = negative) and makes typical
-      // right-to-left current flow forward-bias the LED.
-      const Vf = Number(b.dataset.forwardVoltage) || 2;
-      const Is = 1e-12; // saturation current (heuristic)
-      const nVt = 0.026; // thermal voltage * ideality factor (approx)
-      // note: n1 is the anode net, n2 is the cathode net
-      diodes.push({ n1: nb, n2: na, Is, nVt, Vf, block: b });
-    }
+    const na = netFor(left); const nb = netFor(right);
+    if (b.dataset.type === 'resistor') resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
+    else if (b.dataset.type === 'battery') vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
+    else if (b.dataset.type === 'led') diodes.push({ n1: nb, n2: na, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
   });
 
-  // If there are no nets or no components, fallback
-  if (netMap.size === 0) { return; }
+  if (netMap.size === 0) return;
+  const N = netMap.size;
 
-  // We'll solve using Newton-Raphson: at each iter linearize diodes to conductance + current source
-  const N = netMap.size; const M = vSources.length;
+  // Call library solver
+  if (typeof CircuitSolver === 'undefined' || !CircuitSolver.solveMNA) { fallbackSimplePowering(); return; }
+  const sol = CircuitSolver.solveMNA(N, resistors, vSources, diodes, { maxIter: 60, tol: 1e-8, damping: 0.7 });
+  if (!sol || !sol.success) { fallbackSimplePowering(); return; }
 
-  function buildAndSolveWithDiodeLinearization(voltGuess) {
-    // voltGuess: array length N initial node voltages
-    // Build linearized G matrix and RHS z
-    const G = Array.from({length:N},()=>Array(N).fill(0));
-    const I = Array(N).fill(0);
-    // add resistors
-    resistors.forEach(r=>{
-      if (r.n1 == null || r.n2 == null) return;
-      const g = 1/(r.R||1e-12);
-      if (r.n1 !== r.n2) {
-        G[r.n1][r.n1] += g; G[r.n2][r.n2] += g; G[r.n1][r.n2] -= g; G[r.n2][r.n1] -= g;
-      } else { G[r.n1][r.n1] += g; }
+  // annotate results
+  const V = sol.V; const J = sol.J || [];
+  if (sol.resistorResults) {
+    sol.resistorResults.forEach((rres, idx) => {
+      const meta = resistors[idx]; if (!meta || !meta.block) return;
+      meta.block.dataset.voltageDrop = String(Math.abs((rres.v1||0) - (rres.v2||0))); meta.block.dataset.current = String(Math.abs(rres.I||0));
     });
-
-    // linearize diodes
-    diodes.forEach(d=>{
-      if (d.n1==null || d.n2==null) return;
-      const v1 = voltGuess[d.n1]||0; const v2 = voltGuess[d.n2]||0; const Vd = v1 - v2;
-      // Shockley
-      const Icalc = d.Is * (Math.exp(Vd / d.nVt) - 1);
-      const Gd = (d.Is / d.nVt) * Math.exp(Vd / d.nVt); // dI/dV
-      // current source equivalent: I_eq = Icalc - Gd * Vd
-      const Ieq = Icalc - Gd * Vd;
-      // stamp
-      if (d.n1 !== d.n2) {
-        G[d.n1][d.n1] += Gd; G[d.n2][d.n2] += Gd; G[d.n1][d.n2] -= Gd; G[d.n2][d.n1] -= Gd;
-        I[d.n1] -= Ieq; I[d.n2] += Ieq; // sign: currents injected to node
-      } else {
-        G[d.n1][d.n1] += Gd; I[d.n1] -= Ieq;
-      }
+  }
+  if (sol.diodeResults) {
+    sol.diodeResults.forEach((dres, idx) => {
+      const meta = diodes[idx]; if (!meta || !meta.block) return;
+      meta.block.dataset.voltageDrop = String(dres.Vd||0); meta.block.dataset.current = String(Math.abs(dres.I||0));
+      if ((dres.Vd || 0) >= (meta.Vf || 2) && Math.abs(dres.I||0) > 1e-9) { meta.block.dataset.powered='true'; meta.block.classList.add('powered'); }
+      else { meta.block.dataset.powered='false'; meta.block.classList.remove('powered'); }
     });
-
-    // Now include voltage sources via MNA expansion
-    const B = Array.from({length:N},()=>Array(M).fill(0));
-    const E = vSources.map(v=>v.V);
-    vSources.forEach((vs, j) => { if (vs.nPlus != null) B[vs.nPlus][j] = 1; if (vs.nMinus != null) B[vs.nMinus][j] = -1; });
-
-    const dim = N + M; const A = Array.from({length:dim},()=>Array(dim).fill(0)); const z = Array(dim).fill(0);
-    for (let i=0;i<N;i++) for (let j=0;j<N;j++) A[i][j]=G[i][j];
-    for (let i=0;i<N;i++) for (let j=0;j<M;j++) A[i][N+j]=B[i][j];
-    for (let i=0;i<M;i++) for (let j=0;j<N;j++) A[N+i][j]=B[j][i];
-    for (let i=0;i<N;i++) z[i]=I[i];
-    for (let i=0;i<M;i++) z[N+i]=E[i];
-
-    // solve
-      let x=null; try { x = solveLinear(A,z); } catch(e) { x=null; }
-    return x;
   }
-
-    // Dense linear solver with partial pivoting
-    // A is a square 2D array (n x n), z is RHS length n
-    function solveLinear(Ain, zin) {
-      const n = Ain.length;
-      // clone matrices to avoid mutating inputs
-      const A = Array.from({length:n}, (_,i) => Array.from(Ain[i]));
-      const z = Array.from(zin);
-
-      for (let i = 0; i < n; i++) {
-        // find pivot
-        let maxRow = i; let maxVal = Math.abs(A[i][i]);
-        for (let r = i+1; r < n; r++) { const v = Math.abs(A[r][i]); if (v > maxVal) { maxVal = v; maxRow = r; } }
-        if (maxVal < 1e-15) throw new Error('Singular matrix');
-        // swap rows i and maxRow
-        if (maxRow !== i) { const tmp = A[i]; A[i] = A[maxRow]; A[maxRow] = tmp; const tz = z[i]; z[i] = z[maxRow]; z[maxRow] = tz; }
-
-        // normalize and eliminate
-        const pivot = A[i][i];
-        for (let r = i+1; r < n; r++) {
-          const factor = A[r][i] / pivot;
-          if (!isFinite(factor)) continue;
-          for (let c = i; c < n; c++) A[r][c] -= factor * A[i][c];
-          z[r] -= factor * z[i];
-        }
-      }
-
-      // back substitution
-      const x = Array(n).fill(0);
-      for (let i = n-1; i >= 0; i--) {
-        let s = z[i];
-        for (let j = i+1; j < n; j++) s -= A[i][j] * x[j];
-        x[i] = s / A[i][i];
-      }
-      return x;
-    }
-
-  // initial guess: zeros
-  let Vguess = Array(N).fill(0);
-  let converged = false; let x = null;
-  for (let iter=0; iter<30; iter++) {
-    x = buildAndSolveWithDiodeLinearization(Vguess);
-    if (!x) break;
-    const Vnew = x.slice(0,N);
-    // check convergence
-    let maxDiff = 0; for (let i=0;i<N;i++) maxDiff = Math.max(maxDiff, Math.abs((Vnew[i]||0) - (Vguess[i]||0)));
-    Vguess = Vnew;
-    if (maxDiff < 1e-6) { converged = true; break; }
+  // annotate voltage source currents if provided
+  if (sol.J) {
+    vSources.forEach((vs, idx) => { if (!vs.block) return; vs.block.dataset.current = String(Math.abs(sol.J[idx]||0)); vs.block.dataset.voltageDrop = String(vs.V||0); });
   }
-  // debug: if not converged, print summary to console to aid debugging
-  if (!converged) {
-    const hasLED = diodes.length > 0;
-    if (hasLED) {
-      console.warn('evaluateCircuit: NR did not converge', { N, M, diodesCount: diodes.length });
-    }
-  }
-  if (!converged || !x) { fallbackSimplePowering(); return; }
-
-  // extract and annotate
-  const V = x.slice(0,N); const J = x.slice(N);
-  // compute branch currents for resistors and diodes
-  resistors.forEach(r=>{
-    if (r.n1==null || r.n2==null) return;
-    const v1 = V[r.n1]||0; const v2 = V[r.n2]||0; const vd = v1 - v2; const Icomp = vd / (r.R||1e-12);
-    r.block.dataset.voltageDrop = String(Math.abs(vd)); r.block.dataset.current = String(Math.abs(Icomp));
-  });
-  diodes.forEach(d=>{
-    if (d.n1==null || d.n2==null) return;
-    const v1 = V[d.n1]||0; const v2 = V[d.n2]||0; const Vd = v1 - v2; const Icalc = d.Is * (Math.exp(Vd / d.nVt) - 1);
-    d.block.dataset.voltageDrop = String(Vd); d.block.dataset.current = String(Math.abs(Icalc));
-    if (Math.abs(Icalc) > 1e-5) { d.block.dataset.powered='true'; d.block.classList.add('powered'); }
-  });
-  vSources.forEach((vs, idx)=>{ vs.block.dataset.current = String(Math.abs(J[idx]||0)); vs.block.dataset.voltageDrop = String(vs.V); });
-
-  // success
 }
 
 // Update tooltip contents for a block element
