@@ -58,6 +58,11 @@
     <main class="main-area">
       <div class="workspace-wrap">
         <div id="workspace" role="region" aria-label="Workspace (blocks stay within this box)"></div>
+        <!-- Simulation controls overlay (Run/Stop) -->
+        <div id="sim-controls" aria-hidden="false">
+          <button id="sim-run" class="sim-btn">Run Simulation</button>
+          <button id="sim-test" class="sim-btn sim-test-btn" title="Load a known-good test circuit">Load Test Circuit</button>
+        </div>
 
         <!-- Lesson / Level panel on the right -->
         <aside id="lesson" aria-label="Lesson panel">
@@ -83,9 +88,7 @@
   </div>
 
   <div class="legend" aria-hidden="true">
-    <div class="row"><div class="sw an"></div><div>Anode (red)</div></div>
-    <div class="row"><div class="sw ca"></div><div>Cathode (blue)</div></div>
-    <div class="hint">Connect battery RIGHT → component RIGHT (anode) → component LEFT (cathode) → battery LEFT to complete a circuit.</div>
+    <!-- legend moved into level tips -->
   </div>
 
   <script src="circuit-solver.js"></script>

@@ -14,6 +14,101 @@ let hoverBlurbHideTimer = null;
 let CT_DEBUG = false;
 // system summary removed
 
+/*
+  Overview / flow (high-level):
+  - UI creates draggable parts via `createBlockInstance()` and wires via `createWire()`.
+  - `connections[]` stores wire endpoints (SVG line + two connector elements).
+  - `evaluateCircuit()` is the central function: it builds electrical "nets" using a union-find
+    over connector DOM nodes, translates components into solver inputs (resistors, voltage
+    sources, diodes), then calls `CircuitSolver.solveMNA(...)` when available.
+  - If the JS solver isn't available or fails, `fallbackSimplePowering()` and path-based
+    heuristics attempt to mark LEDs as powered (and now also attach conservative current/voltage
+    estimates so the tooltip can display values for debugging).
+
+  Common failure points:
+  - Nets: connectors that are isolated or not connected to any wire will have no net id.
+  - Net mapping: if the union-find doesn't include a connector because of a bug, components
+    can get `null` nets and be ignored by the solver.
+  - Solver output mapping: the code relies on array ordering (resistors[], diodes[], vSources[])
+    matching the solver's returned arrays. If ordering mismatches, annotations will attach to
+    wrong blocks.
+  - Fallback heuristics only detect connectivity (not voltages/currents) which can lead tooltips
+    to show no numeric values; to make debugging easier we now estimate and attach conservative
+    numbers when a component is heuristically considered powered.
+*/
+
+// Simulation run state
+let isSimRunning = false;
+let simInterval = null;
+let simTickCount = 0;
+let simNoProgressCount = 0;
+let lastSimSummary = { ledCount: 0, totalCurrent: 0 };
+
+function ensureTooltipElement(){
+  if (!document.querySelector('.ct-tooltip')){
+    const tt = document.createElement('div'); tt.className = 'ct-tooltip'; document.body.appendChild(tt);
+  }
+}
+
+// Clear current workspace: remove all blocks and wires
+function clearWorkspace(){
+  // remove wire SVGs
+  connections.forEach(c=>{ try{ if (c.line && c.line.parentNode) c.line.parentNode.removeChild(c.line); }catch(e){} });
+  connections = [];
+  // remove blocks
+  const blocks = Array.from(workspace.querySelectorAll('.block'));
+  blocks.forEach(b=>{ try{ b.remove(); }catch(e){} });
+}
+
+// Load a small canonical test circuit (battery -> resistor -> LED -> battery)
+function loadTestCircuit(){
+  if (isSimRunning){ updateSimBanner('Stop simulation before loading a test circuit.', 'error', true); return; }
+  clearWorkspace();
+  // create parts
+  const batt = createBlockInstance('battery'); const res = createBlockInstance('resistor'); const led = createBlockInstance('led');
+  // set nicer ids (optional)
+  batt.dataset.id = 'tbatt'; res.dataset.id = 'tres'; led.dataset.id = 'tled';
+  // set values
+  batt.dataset.voltage = 5; res.dataset.resistance = 100; led.dataset.forwardVoltage = 2; led.dataset.powered = 'false';
+  // position inside workspace
+  batt.style.position='absolute'; batt.style.left='120px'; batt.style.top='120px'; batt.classList.add('instance');
+  res.style.position='absolute'; res.style.left='260px'; res.style.top='240px'; res.classList.add('instance');
+  led.style.position='absolute'; led.style.left='380px'; led.style.top='120px'; led.classList.add('instance');
+  workspace.appendChild(batt); workspace.appendChild(res); workspace.appendChild(led);
+  makeMovable(batt); makeMovable(res); makeMovable(led);
+  // wire them in series: battery.RIGHT -> resistor.RIGHT, resistor.LEFT -> led.RIGHT, led.LEFT -> battery.LEFT
+  const battRight = batt.querySelector('.input.right'); const battLeft = batt.querySelector('.input.left');
+  const resRight = res.querySelector('.input.right'); const resLeft = res.querySelector('.input.left');
+  const ledRight = led.querySelector('.input.right'); const ledLeft = led.querySelector('.input.left');
+  // create wires
+  createWire(battRight, resRight);
+  createWire(resLeft, ledRight);
+  createWire(ledLeft, battLeft);
+  // evaluate once
+  try { evaluateCircuit(); } catch(e){ console.error(e); }
+}
+
+function ensureSimBanner(){
+  let el = document.getElementById('sim-banner');
+  if (!el){ el = document.createElement('div'); el.id = 'sim-banner'; document.body.appendChild(el); }
+  return el;
+}
+
+function updateSimBanner(msg, type='error', visible=true){
+  const el = ensureSimBanner();
+  el.textContent = msg || '';
+  el.classList.remove('error','ok');
+  if (type === 'ok') el.classList.add('ok'); else el.classList.add('error');
+  if (visible) el.classList.add('visible'); else el.classList.remove('visible');
+}
+
+function clearSimBanner(){ const el = document.getElementById('sim-banner'); if (el) el.classList.remove('visible'); }
+
+function disableEditingDuringSim(enable){
+  isSimRunning = !!enable;
+  if (isSimRunning) document.body.classList.add('sim-running'); else document.body.classList.remove('sim-running');
+}
+
 // Data-driven hover blurbs for parts; easy to extend when adding parts
 const partBlurbs = {
   battery: {
@@ -203,6 +298,8 @@ function rotateBlock(block) {
 // --- Handle drag start from palette ---
 paletteBlocks.forEach(block => {
   block.addEventListener("mousedown", e => {
+    // prevent creating new blocks while simulation is running
+    if (isSimRunning) { updateSimBanner('Stop simulation before editing the workspace.', 'error', true); return; }
     const type = block.dataset.type;
     const newBlock = createBlockInstance(type);
 
@@ -327,13 +424,19 @@ function createBlockInstance(type) {
     // delay tooltip by 500ms
     clearTimeout(hoverTimer);
     hoverTimer = setTimeout(() => {
-      const tt = document.querySelector('.ct-tooltip');
-      if (!tt) return;
-      updateTooltipForBlock(block, tt);
-      const rect = block.getBoundingClientRect();
-      tt.style.left = (rect.right + 8) + 'px';
-      tt.style.top = (rect.top) + 'px';
-      tt.classList.add('visible');
+        // Re-evaluate circuit on hover to force-show current computed values for debugging
+        try { evaluateCircuit(); } catch (err) { /* non-fatal */ }
+
+        const tt = document.querySelector('.ct-tooltip');
+        if (!tt) return;
+        updateTooltipForBlock(block, tt);
+        const rect = block.getBoundingClientRect();
+        tt.style.left = (rect.right + 8) + 'px';
+        tt.style.top = (rect.top) + 'px';
+        tt.classList.add('visible');
+
+        // Add a temporary debug visual while hovering so it's obvious which part we're inspecting
+        try { block.classList.add('hovered-debug'); } catch(e) {}
     }, 500);
   });
   
@@ -356,6 +459,7 @@ function createBlockInstance(type) {
     if (tt) tt.classList.remove('visible');
     // hide right-side blurb
     try { updateHoverBlurb(null, e); } catch (err) { }
+    try { block.classList.remove('hovered-debug'); } catch(e) {}
   });
 
   // selection on click
@@ -373,6 +477,7 @@ function makeMovable(block) {
   let startX, startY, origX, origY;
 
   block.addEventListener("mousedown", e => {
+    if (isSimRunning) { updateSimBanner('Stop simulation before moving parts.', 'error', true); return; }
     if (e.target.classList.contains("input")) return; // don't move if clicking connector
     e.stopPropagation();
     // prevent text selection while moving
@@ -591,6 +696,7 @@ function importCircuit(data){
 // --- Handle connecting two inputs ---
 function handleConnectorClick(e, connector) {
   e.stopPropagation();
+  if (isSimRunning) { updateSimBanner('Stop simulation before editing connections.', 'error', true); return; }
   if (!selectedConnector) {
     // select the first connector
     selectedConnector = connector;
@@ -620,6 +726,7 @@ function handleConnectorClick(e, connector) {
 
 // --- Draw a wire between two connectors ---
 function createWire(conn1, conn2) {
+  if (isSimRunning) { updateSimBanner('Stop simulation before creating wires.', 'error', true); return; }
   // Validate connectors: must be elements inside the workspace and be input elements
   if (!conn1 || !conn2) return;
   if (!(conn1 instanceof Element) || !(conn2 instanceof Element)) return;
@@ -692,6 +799,7 @@ function updateAllWires() {
 // Remove all connections for a given block and remove the block from DOM
 function removeBlockAndConnections(block) {
   if (!block || !block.parentElement) return;
+  if (isSimRunning) { updateSimBanner('Stop simulation before deleting parts.', 'error', true); return; }
 
   // If a connector is currently selected on this block, clear selection
   if (selectedConnector && (selectedConnector.closest('.block') === block)) {
@@ -775,20 +883,20 @@ function evaluateCircuit() {
 
   if (CT_DEBUG) {
     try {
-      console.debug('CT: solver inputs', { N: N, resistors, vSources, diodes });
+      console.debug('CT: solver inputs', { connectorCount: connectorList.length, resistors: resistors.length, vSources: vSources.length, diodes: diodes.length });
     } catch (e) { console.debug('CT: debug inputs failed', e); }
   }
 
   if (netMap.size === 0) {
     // no nets: nothing to evaluate
-    return;
+    return { success: false, reason: 'no-nets' };
   }
   const N = netMap.size;
 
   // Call library solver
-  if (typeof CircuitSolver === 'undefined' || !CircuitSolver.solveMNA) { fallbackSimplePowering(); return; }
+  if (typeof CircuitSolver === 'undefined' || !CircuitSolver.solveMNA) { fallbackSimplePowering(); return { success:false, reason:'no-solver' }; }
   const sol = CircuitSolver.solveMNA(N, resistors, vSources, diodes, { maxIter: 60, tol: 1e-8, damping: 0.7 });
-  if (!sol || !sol.success) { fallbackSimplePowering(); return; }
+  if (!sol || !sol.success) { fallbackSimplePowering(); return { success:false, reason:'solver-failed' }; }
 
   // annotate results
   if (CT_DEBUG) {
@@ -844,8 +952,14 @@ function evaluateCircuit() {
         const I = Math.abs(Number(b.dataset.current) || 0);
         const Vd = Math.abs(Number(b.dataset.voltageDrop) || 0);
         const Vf = Number(b.dataset.forwardVoltage || 2);
-        if ((Vd >= Vf && I > 1e-6) || I > 1e-6) { b.dataset.powered = 'true'; b.classList.add('powered'); }
-  try { const maxVisualI = 0.02; const intensity = Math.min(1, I / maxVisualI); b.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
+            if ((Vd >= Vf && I > 1e-6) || I > 1e-6) {
+              // mark powered and attach conservative numeric estimates so the tooltip can show values
+              b.dataset.powered = 'true'; b.classList.add('powered');
+              // attach estimated (or previously computed) voltage drop/current for debug tooltip
+              try { if (!b.dataset.voltageDrop || Number(b.dataset.voltageDrop) === 0) b.dataset.voltageDrop = String(Vf); } catch(e){}
+              try { if (!b.dataset.current || Number(b.dataset.current) === 0) b.dataset.current = String(Math.max(I, 1e-4)); } catch(e){}
+            }
+            try { const maxVisualI = 0.02; const intensity = Math.min(1, Math.max(I, 1e-6) / maxVisualI); b.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
       });
     }
   } catch (e) { /* ignore fallback errors */ }
@@ -912,6 +1026,7 @@ function evaluateCircuit() {
   } catch(e) { /* non-critical */ }
 
   // system summary logic removed
+  return { success: true, sol };
 }
 
 // Update tooltip contents for a block element
@@ -924,6 +1039,12 @@ function updateTooltipForBlock(block, tt) {
   if (block.dataset.voltageDrop) lines.push(`ΔV: ${Number(block.dataset.voltageDrop).toFixed(4)} V`);
   if (block.dataset.current) lines.push(`I: ${Number(block.dataset.current).toFixed(6)} A`);
   if (block.dataset.powered === 'true') lines.push('Powered: yes');
+  // If debugging is enabled, append raw dataset for quick inspection
+  if (CT_DEBUG) {
+    try {
+      const raw = JSON.stringify(block.dataset); lines.push(`<small style="color:#9ca3af;margin-top:6px">${raw}</small>`);
+    } catch(e) {}
+  }
   tt.innerHTML = lines.map(l => `<div>${l}</div>`).join('');
 }
 
@@ -964,9 +1085,64 @@ function fallbackSimplePowering() {
       const reachableFromPos = new Set(); (function dfs(node){ if (reachableFromPos.has(node)) return; reachableFromPos.add(node); const neighbors = adjConn.get(node)||[]; for (const nb of neighbors) dfs(nb.node); })(pos);
       const reachableToNeg = new Set(); (function dfs2(node){ if (reachableToNeg.has(node)) return; reachableToNeg.add(node); const neighbors = adjConn.get(node)||[]; for (const nb of neighbors) dfs2(nb.node); })(neg);
       blocks.forEach(b => { if (b.dataset.type !== 'led') return; const l = b.querySelector('.input.left'); const r = b.querySelector('.input.right'); if (l && r && reachableFromPos.has(l) && reachableFromPos.has(r) && reachableToNeg.has(l) && reachableToNeg.has(r)) { b.dataset.powered = 'true'; b.classList.add('powered'); } });
+      // attach conservative numeric estimates for LEDs discovered by this connectivity-only heuristic
+      try {
+        // estimate current based on simple series assumption (if no resistor found we pick a small current)
+        const Vbat = Number(batt.dataset.voltage) || 5;
+        const Rseries = 100; // conservative guessed series resistance if none is explicitly present
+        const Iest = Rseries > 0 ? Math.abs(Vbat) / Rseries : 1e-3;
+        Array.from(blocks).forEach(b => {
+          if (b.dataset.type !== 'led') return;
+          const l = b.querySelector('.input.left'); const r = b.querySelector('.input.right');
+          if (!(l && r)) return;
+          if (reachableFromPos.has(l) && reachableFromPos.has(r) && reachableToNeg.has(l) && reachableToNeg.has(r)) {
+            if (!b.dataset.current) b.dataset.current = String(Iest);
+            if (!b.dataset.voltageDrop) b.dataset.voltageDrop = String(Number(b.dataset.forwardVoltage || 2));
+            try { const intensity = Math.min(1, Iest / 0.02); b.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
+          }
+        });
+      } catch(e) { /* non-critical */ }
     }
   });
-}
+    }
+
+    // Start/Stop simulation runner
+    function startSimulation(button){
+      if (isSimRunning) return;
+      disableEditingDuringSim(true);
+      if (button) { button.classList.add('stop'); button.textContent = 'Stop Simulation'; }
+      simTickCount = 0; simNoProgressCount = 0; lastSimSummary = { ledCount: 0, totalCurrent: 0 };
+      updateSimBanner('Simulation running…', 'ok', true);
+      // immediate run
+      try { evaluateCircuit(); } catch(e){ console.error(e); }
+      simInterval = setInterval(()=>{
+        simTickCount++;
+        const res = evaluateCircuit();
+        // summarize
+        const ledsPowered = workspace.querySelectorAll('.block[data-type="led"].powered').length;
+        let totalCurrent = 0;
+        Array.from(workspace.querySelectorAll('.block')).forEach(b=>{ totalCurrent += Math.abs(Number(b.dataset.current) || 0); });
+        // detect solver failure
+        if (res && res.success === false){
+          if (res.reason === 'solver-failed') updateSimBanner('Solver failed to converge (singular / looped circuit). Try adding a resistor or check wiring.', 'error', true);
+          else if (res.reason === 'no-nets') updateSimBanner('No nets detected: components are not connected.', 'error', true);
+        }
+        // detect lack of visible progress: no LEDs lit and near-zero currents
+        const noProgress = (ledsPowered === 0 && totalCurrent < 1e-6);
+        if (noProgress){ simNoProgressCount++; } else { simNoProgressCount = 0; clearSimBanner(); }
+        if (simNoProgressCount >= 6){ updateSimBanner('No powered components detected. Check wiring, polarity, or battery voltage.', 'error', true); }
+        lastSimSummary = { ledCount: ledsPowered, totalCurrent };
+      }, 600);
+    }
+
+    function stopSimulation(button){
+      if (!isSimRunning) return;
+      disableEditingDuringSim(false);
+      if (button) { button.classList.remove('stop'); button.textContent = 'Run Simulation'; }
+      if (simInterval) { clearInterval(simInterval); simInterval = null; }
+      updateSimBanner('Simulation stopped.', 'ok', true);
+      setTimeout(()=>{ clearSimBanner(); }, 1400);
+    }
 
 // --- Lesson / teaching UI (levels, show answer modal, submit feedback) ---
 (function(){
@@ -979,7 +1155,8 @@ function fallbackSimplePowering() {
         'Be sure to keep track of wiring and which components are powered avoid creating unintended short circuits or infinite loops.',
         'You can always delete or rotate parts if something does not work; rotating changes connector orientation.',
         'Try small experiments: change one thing at a time (e.g., resistor value) and observe what changes in the system summary.',
-        'Ask yourself why a component is (or isn\'t) powered tracing the path of current helps a lot.'
+        'Ask yourself why a component is (or isn\'t) powered tracing the path of current helps a lot.',
+        'Connector polarity tip: battery RIGHT → component RIGHT (anode) → component LEFT (cathode) → battery LEFT — this is the easiest series wiring pattern to light an LED.'
       ],
       image: null
     },
@@ -1102,6 +1279,17 @@ function fallbackSimplePowering() {
 
   // wire up UI after DOM ready
   document.addEventListener('DOMContentLoaded', ()=>{
+    // ensure tooltip exists early so hover tooltips always work
+    ensureTooltipElement();
+    // simulation controls
+    const simBtn = document.getElementById('sim-run');
+    if (simBtn){
+      simBtn.addEventListener('click', ()=>{
+        if (!isSimRunning) startSimulation(simBtn); else stopSimulation(simBtn);
+      });
+    }
+    // create sim banner element once
+    ensureSimBanner();
     initLevelSelector();
     const showBtn = document.getElementById('show-answer');
     const submitBtn = document.getElementById('submit-answer');
@@ -1118,6 +1306,9 @@ function fallbackSimplePowering() {
       modal.querySelector('.overlay')?.addEventListener('click', closeAnswerModal);
       modal.querySelector('.close')?.addEventListener('click', closeAnswerModal);
     }
+    // hook up test circuit button (workspace overlay)
+    const testBtn = document.getElementById('sim-test');
+    if (testBtn) testBtn.addEventListener('click', ()=>{ loadTestCircuit(); });
   });
 
 })();
