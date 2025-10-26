@@ -9,6 +9,90 @@ let _blockIdCounter = 1;
 let selectedBlock = null;
 let hoverTimer = null;
 const undoStack = [];
+let hoverBlurbHideTimer = null;
+let lastSystemSummary = { voltage: null, resistance: null, current: null };
+
+function updateSystemSummaryUI(summary) {
+  try {
+    const sysVoltageEl = document.getElementById('sys-voltage');
+    const sysResistanceEl = document.getElementById('sys-resistance');
+    const sysCurrentEl = document.getElementById('sys-current');
+    if (!sysVoltageEl || !sysResistanceEl || !sysCurrentEl) return;
+    if (!summary) {
+      sysVoltageEl.textContent = '—'; sysResistanceEl.textContent = '—'; sysCurrentEl.textContent = '—';
+      return;
+    }
+    sysVoltageEl.textContent = (summary.voltage==null)?'—':Number(summary.voltage).toFixed(3);
+    sysResistanceEl.textContent = (summary.resistance==null)?'—':Number(summary.resistance).toFixed(3);
+    sysCurrentEl.textContent = (summary.current==null)?'—':String(summary.current);
+  } catch(e) { /* ignore UI errors */ }
+}
+
+// Data-driven hover blurbs for parts; easy to extend when adding parts
+const partBlurbs = {
+  battery: {
+    title: 'Battery',
+    desc: 'Supplies a voltage difference to power circuits. Place positive (anode) and negative (cathode) connectors to complete a loop.'
+  },
+  resistor: {
+    title: 'Resistor',
+    desc: 'Limits current flow and divides voltage. Use resistors to protect LEDs or set sensor thresholds.'
+  },
+  led: {
+    title: 'LED',
+    desc: 'Light Emitting Diode: lights up when forward biased. Needs a resistor to limit current.'
+  }
+};
+
+// SVG icons per part type
+const svgMap = {
+  battery: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="6" width="16" height="12" rx="2" fill="#34d399" opacity="0.14"/><rect x="4" y="8" width="12" height="8" rx="1" fill="#34d399"/><rect x="18" y="10" width="2" height="4" rx="0.5" fill="#34d399"/></svg>',
+  resistor: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="6" width="20" height="12" rx="2" fill="#60a5fa" opacity="0.12"/><path d="M3 12h3l2-4 3 8 2-4h3" stroke="#2563eb" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  led: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="9" r="3" fill="#f59e0b"/><path d="M12 12v6" stroke="#f59e0b" stroke-width="1.6" stroke-linecap="round"/><path d="M7 4l1.5 1.5M16.5 4L15 5.5" stroke="#f59e0b" stroke-width="1.2" stroke-linecap="round"/></svg>'
+};
+
+function updateHoverBlurb(type, event) {
+  const hb = document.getElementById('hover-blurb');
+  if (!hb) return;
+  
+  // clear any pending hide timer when showing a new blurb
+  if (hoverBlurbHideTimer) { 
+    clearTimeout(hoverBlurbHideTimer); 
+    hoverBlurbHideTimer = null; 
+  }
+  
+  if (!type) {
+    // delay hiding to allow a short linger/animation (500ms)
+    hoverBlurbHideTimer = setTimeout(() => {
+      hb.classList.remove('visible');
+      hb.classList.remove('battery', 'resistor', 'led');
+    }, 500);
+    return;
+  }
+
+  const info = partBlurbs[type] || { title: type || 'Part', desc: '' };
+  const icon = hb.querySelector('.hb-icon');
+  const title = hb.querySelector('.hb-title');
+  const desc = hb.querySelector('.hb-desc');
+  const extra = hb.querySelector('.hb-extra');
+
+  // Keep the blurb statically inside the properties panel —
+  // do not set `left`/`top` here. Positioning is handled by CSS.
+  // (previously we positioned the blurb near hovered elements; reverted)
+
+  if (icon) {
+    if (svgMap[type]) icon.innerHTML = svgMap[type];
+    else icon.textContent = (type && type[0]) ? type[0].toUpperCase() : '?';
+  }
+  if (title) title.textContent = info.title || '';
+  if (desc) desc.textContent = info.desc || '';
+  if (extra) extra.textContent = info.extra || '';
+
+  hb.classList.add('visible');
+  hb.classList.remove('battery', 'resistor', 'led');
+  hb.classList.add(type);
+}
+
 
 // Create an SVG layer for wires
 const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -20,7 +104,7 @@ function ensureContextMenu() {
   if (contextMenu) return;
   contextMenu = document.createElement('div');
   contextMenu.className = 'ct-context-menu';
-  contextMenu.innerHTML = '<div id="ct-delete">Click to delete</div>';
+  contextMenu.innerHTML = '<div id="ct-rotate">Rotate</div><div id="ct-delete">Click to delete</div>';
   document.body.appendChild(contextMenu);
 
   // create tooltip used for hover display
@@ -30,30 +114,35 @@ function ensureContextMenu() {
     document.body.appendChild(tt);
   }
 
-  // click handler for delete
+  // Function to handle block rotation
+  function rotateBlock(block) {
+    if (!block) return;
+    const currentRotation = block.style.transform || '';
+    const currentDegrees = currentRotation.match(/rotate\((\d+)deg\)/) ? 
+      parseInt(currentRotation.match(/rotate\((\d+)deg\)/)[1]) : 0;
+    const newDegrees = (currentDegrees + 90) % 360;
+    block.style.transform = `rotate(${newDegrees}deg)`;
+    
+    // Update connections if any
+    if (connections.length > 0) {
+      updateWireConnections();
+    }
+  }
+
+  // click handler for menu options
   contextMenu.addEventListener('click', e => {
     const targetBlock = contextMenu._targetBlock;
     if (!targetBlock) return hideContextMenu();
+    if (e.target.id === 'ct-rotate') {
+      rotateBlock(targetBlock);
+      hideContextMenu();
+      return;
+    }
     if (e.target.id === 'ct-delete') {
       removeBlockAndConnections(targetBlock);
       hideContextMenu();
       return;
     }
-
-    // handle save from inline editor
-    if (e.target.id === 'ct-save') {
-      const input = contextMenu.querySelector('input');
-      if (!input) return hideContextMenu();
-      const val = Number(input.value);
-      if (isNaN(val)) return hideContextMenu();
-      const blk = contextMenu._targetBlock;
-      if (blk.dataset.type === 'battery') blk.dataset.voltage = String(val);
-      if (blk.dataset.type === 'resistor') blk.dataset.resistance = String(val);
-      evaluateCircuit();
-      hideContextMenu();
-      return;
-    }
-    hideContextMenu();
   });
 
   // hide on any global click
@@ -64,13 +153,15 @@ function ensureContextMenu() {
   });
 }
 
+
 function showContextMenu(x, y, block) {
   ensureContextMenu();
   contextMenu.style.left = x + 'px';
   contextMenu.style.top = y + 'px';
   // populate menu with block-specific controls
   contextMenu._targetBlock = block;
-  contextMenu.innerHTML = '<div id="ct-delete">Click to delete</div>';
+  // include rotate control
+  contextMenu.innerHTML = '<div id="ct-rotate">Rotate</div><div id="ct-delete">Click to delete</div>';
   if (block.dataset.type === 'battery') {
     const v = Number(block.dataset.voltage) || 10;
     const editor = document.createElement('div');
@@ -93,6 +184,36 @@ function hideContextMenu() {
   contextMenu._targetBlock = null;
 }
 
+// Rotate (flip) a block's connectors and update logic/visuals
+function rotateBlock(block) {
+  if (!block) return;
+  pushUndo();
+  // find inputs (they may have class names left/right before swap)
+  const inpLeft = block.querySelector('.input.left');
+  const inpRight = block.querySelector('.input.right');
+  if (!inpLeft || !inpRight) return;
+  // swap class names left/right
+  inpLeft.classList.remove('left'); inpLeft.classList.add('right');
+  inpRight.classList.remove('right'); inpRight.classList.add('left');
+  // swap terminal dataset
+  inpLeft.dataset.terminal = 'right';
+  inpRight.dataset.terminal = 'left';
+  // swap polarity classes anode/cathode
+  const leftWasAnode = inpLeft.classList.contains('anode');
+  if (leftWasAnode) {
+    inpLeft.classList.remove('anode'); inpLeft.classList.add('cathode');
+    inpRight.classList.remove('cathode'); inpRight.classList.add('anode');
+  } else {
+    inpLeft.classList.remove('cathode'); inpLeft.classList.add('anode');
+    inpRight.classList.remove('anode'); inpRight.classList.add('cathode');
+  }
+  // toggle flipped flag on dataset
+  block.dataset.flipped = block.dataset.flipped === 'true' ? 'false' : 'true';
+  // update wires and solver
+  updateAllWires();
+  evaluateCircuit();
+}
+
 // --- Handle drag start from palette ---
 paletteBlocks.forEach(block => {
   block.addEventListener("mousedown", e => {
@@ -104,6 +225,16 @@ paletteBlocks.forEach(block => {
     moveBlockTo(newBlock, e.pageX, e.pageY);
 
     draggingBlock = newBlock;
+  });
+
+  // show the hover blurb when user hovers palette items
+  block.addEventListener('mouseenter', e => {
+    const type = block.dataset.type;
+    if (type) updateHoverBlurb(type, e);
+  });
+  
+  block.addEventListener('mouseleave', e => {
+    updateHoverBlurb(null, e);
   });
 });
 
@@ -201,9 +332,15 @@ function createBlockInstance(type) {
 
   // tooltip handlers (show measurements)
   block.addEventListener('mouseenter', e => {
+    // populate the right-side hover blurb immediately for workspace instances
+    const type = block.dataset.type;
+    if (type) {
+      try { updateHoverBlurb(type, e); } catch (err) { }
+    }
+    
     // delay tooltip by 500ms
     clearTimeout(hoverTimer);
-    hoverTimer = setTimeout(()=>{
+    hoverTimer = setTimeout(() => {
       const tt = document.querySelector('.ct-tooltip');
       if (!tt) return;
       updateTooltipForBlock(block, tt);
@@ -213,18 +350,26 @@ function createBlockInstance(type) {
       tt.classList.add('visible');
     }, 500);
   });
+  
   block.addEventListener('mousemove', e => {
+    const type = block.dataset.type;
+    if (type && !selectedConnector) {
+      try { updateHoverBlurb(type, e); } catch (err) { }
+    }
+    
     const tt = document.querySelector('.ct-tooltip');
     if (!tt) return;
     tt.style.left = (e.pageX + 10) + 'px';
     tt.style.top = (e.pageY + 10) + 'px';
     updateTooltipForBlock(block, tt);
   });
+  
   block.addEventListener('mouseleave', e => {
     clearTimeout(hoverTimer);
     const tt = document.querySelector('.ct-tooltip');
-    if (!tt) return;
-    tt.classList.remove('visible');
+    if (tt) tt.classList.remove('visible');
+    // hide right-side blurb
+    try { updateHoverBlurb(null, e); } catch (err) { }
   });
 
   // selection on click
@@ -405,13 +550,39 @@ document.addEventListener('DOMContentLoaded', ()=>{
       try { selectedConnector.classList.remove('selected'); } catch(e) {}
       selectedConnector = null;
     }
+    // hide hover blurb when clicking away
+    updateHoverBlurb(null);
   });
+
+  // Theme toggle initialization (light/dark)
+  const themeBtn = document.getElementById('theme-btn');
+  function applyTheme(t) {
+    if (t === 'dark') { document.body.classList.add('dark'); if (themeBtn) themeBtn.textContent = '🌙'; }
+    else { document.body.classList.remove('dark'); if (themeBtn) themeBtn.textContent = '🌞'; }
+    try { localStorage.setItem('ct-theme', t); } catch(e){}
+  }
+  // load saved or use system preference
+  try {
+    const saved = localStorage.getItem('ct-theme');
+    if (saved) applyTheme(saved);
+    else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) applyTheme('dark');
+    else applyTheme('light');
+  } catch(e) { if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) applyTheme('dark'); }
+  if (themeBtn) themeBtn.addEventListener('click', ()=>{ applyTheme(document.body.classList.contains('dark') ? 'light' : 'dark'); });
+  // restore persisted system summary if present
+  try {
+    const saved = localStorage.getItem('ct-system-summary');
+    if (saved) {
+      lastSystemSummary = JSON.parse(saved);
+      updateSystemSummaryUI(lastSystemSummary);
+    }
+  } catch(e) {}
 });
 
 function exportCircuit(){
   const blocks = Array.from(workspace.querySelectorAll('.block')).map(b=>({ id:b.dataset.id, type:b.dataset.type, dataset:{...b.dataset}, left:b.style.left, top:b.style.top }));
   const conns = connections.map(c=>({ conn1BlockId:c.conn1.dataset.blockId, conn1Terminal:c.conn1.dataset.terminal, conn2BlockId:c.conn2.dataset.blockId, conn2Terminal:c.conn2.dataset.terminal }));
-  return { blocks, conns };
+  return { blocks, conns, systemSummary: lastSystemSummary };
 }
 
 function importCircuit(data){
@@ -434,6 +605,12 @@ function importCircuit(data){
     const conn2 = b2.querySelector(`.input.${c.conn2Terminal}`);
     if (conn1 && conn2) createWire(conn1, conn2);
   });
+  // restore system summary if present
+  if (data.systemSummary) {
+    lastSystemSummary = data.systemSummary;
+    updateSystemSummaryUI(lastSystemSummary);
+    try { localStorage.setItem('ct-system-summary', JSON.stringify(lastSystemSummary)); } catch(e){}
+  }
   evaluateCircuit();
 }
 
@@ -575,7 +752,13 @@ function evaluateCircuit() {
     else if (b.dataset.type === 'led') diodes.push({ n1: nb, n2: na, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
   });
 
-  if (netMap.size === 0) return;
+  if (netMap.size === 0) {
+    // no nets: show zeros for system summary (components present but not connected)
+    lastSystemSummary = { voltage: 0, resistance: 0, current: 0 };
+    try { localStorage.setItem('ct-system-summary', JSON.stringify(lastSystemSummary)); } catch(e){}
+    updateSystemSummaryUI(lastSystemSummary);
+    return;
+  }
   const N = netMap.size;
 
   // Call library solver
@@ -602,6 +785,30 @@ function evaluateCircuit() {
   // annotate voltage source currents if provided
   if (sol.J) {
     vSources.forEach((vs, idx) => { if (!vs.block) return; vs.block.dataset.current = String(Math.abs(sol.J[idx]||0)); vs.block.dataset.voltageDrop = String(vs.V||0); });
+  }
+
+  // --- simple system summary (aggregate for user) ---
+  try {
+    const sysVoltageEl = document.getElementById('sys-voltage');
+    const sysResistanceEl = document.getElementById('sys-resistance');
+    const sysCurrentEl = document.getElementById('sys-current');
+    if (sysVoltageEl && sysResistanceEl && sysCurrentEl) {
+      // total source voltage: sum of absolute battery voltages (heuristic)
+      const totalV = vSources.reduce((s, vs) => s + (isFinite(vs.V) ? Math.abs(Number(vs.V)||0) : 0), 0);
+      // equivalent resistance: simple series sum of resistors that are inside workspace
+      const totalR = resistors.reduce((s, r) => s + (isFinite(r.R) ? Math.abs(Number(r.R)||0) : 0), 0);
+      // compute current via Ohm's law (guard against zero R)
+      const I = (totalR > 1e-15) ? (totalV / totalR) : 0;
+      sysVoltageEl.textContent = Number(totalV).toFixed(3);
+      sysResistanceEl.textContent = Number(totalR).toFixed(3);
+      sysCurrentEl.textContent = Number(I).toExponential(6);
+      // cache & persist and update UI
+      lastSystemSummary = { voltage: totalV, resistance: totalR, current: Number(I).toExponential(6) };
+      try { localStorage.setItem('ct-system-summary', JSON.stringify(lastSystemSummary)); } catch(e){}
+      updateSystemSummaryUI(lastSystemSummary);
+    }
+  } catch (e) {
+    // ignore UI update errors
   }
 }
 
@@ -658,3 +865,157 @@ function fallbackSimplePowering() {
     }
   });
 }
+
+// --- Lesson / teaching UI (levels, show answer modal, submit feedback) ---
+(function(){
+  const levels = [
+    {
+      id: 0,
+      title: 'Welcome to Circuit Studio',
+      desc: "Welcome to Circuit Studio! Here you will learn how to make circuits and explore components. You can drag and drop parts from the left to connect them and light up LEDs, build simple math counters, switches, and more. Feel free to experiment try changing component values, rearranging wiring, and observe how voltage, current, and resistance change in the system. This environment is for learning, exploring, and having fun.",
+      tips: [
+        'Be sure to keep track of wiring and which components are powered avoid creating unintended short circuits or infinite loops.',
+        'You can always delete or rotate parts if something does not work; rotating changes connector orientation.',
+        'Try small experiments: change one thing at a time (e.g., resistor value) and observe what changes in the system summary.',
+        'Ask yourself why a component is (or isn\'t) powered tracing the path of current helps a lot.'
+      ],
+      image: null
+    },
+    {
+      id: 1,
+      title: 'Connect an LED',
+      desc: "Place a battery, an LED, and a resistor so the LED lights when the circuit is complete. This teaches polarity, series connections, and current limiting.",
+      tips: [
+        'Try to connect a resistor in series with the LED to limit current rather than putting it in parallel.',
+        'Make sure the LED is oriented correctly (anode vs cathode) LEDs only light when forward biased.',
+        'If the LED does not light, double-check your wires form a closed loop back to the battery.'
+      ],
+      image: null
+    },
+    {
+      id: 2,
+      title: 'Ramping up voltage',
+      desc: "Chain batteries in series to increase total voltage and observe how current changes through resistors and LEDs. This helps you understand why voltage adds in series and how higher voltage affects components.",
+      tips: [
+        'Connect batteries in series (positive to negative) to add voltages; watch component limits.',
+        'Higher voltage can increase current use resistors to protect LEDs and other parts.',
+        'Observe the system summary for voltage and current changes as you add batteries.'
+      ],
+      image: null
+    },
+    {
+      id: 3,
+      title: 'Series and Parallel Resistors',
+      desc: "Build circuits with resistors arranged in series and parallel to see how total resistance and current change. Series adds resistances; parallel reduces the equivalent resistance.",
+      tips: [
+        'Try combining equal resistors in series and parallel and compare total resistance in the system summary.',
+        'Measure how current through a branch changes when you alter resistor values.',
+        'Think about how splitting current in parallel affects component voltages.'
+      ],
+      image: null
+    },
+    {
+      id: 4,
+      title: 'Connecting to a 7-segment display',
+      desc: "A 7-segment display is made of multiple LED segments. Plan which segments to drive, use resistors for each segment, and decide between a common-anode or common-cathode wiring approach.",
+      tips: [
+        'Each segment behaves like an LED: give it a resistor to limit current.',
+        'Decide whether your display is common-anode or common-cathode and wire accordingly.',
+        'Start by lighting a single segment before trying to drive all seven.'
+      ],
+      image: null
+    },
+    {
+      id: 5,
+      title: 'Experiment!',
+      desc: "Combine what you\'ve learned: design small projects, try logic using LEDs and switches, or build measurement setups. This level is intentionally open-ended to encourage creativity.",
+      tips: [
+        'Try combining batteries, resistors, and LEDs to make a small pattern or indicator.',
+        'Break big ideas into small steps: prototype one section, test, then expand.',
+        'Don\'t be afraid to fail — iterating is how you learn. Have fun!'
+      ],
+      image: null
+    }
+  ];
+
+  function initLevelSelector(){
+    const sel = document.getElementById('level-select');
+    if (!sel) return;
+    sel.innerHTML = levels.map(l => `<option value="${l.id}">${l.id}. ${l.title}</option>`).join('');
+    sel.addEventListener('change', e => {
+      const id = Number(e.target.value);
+      updateLessonUI(id);
+    });
+    // default
+    updateLessonUI(levels[0].id);
+  }
+
+  function updateLessonUI(id){
+    const lvl = levels.find(l=>l.id===id) || levels[0];
+    const num = document.getElementById('level-num');
+    const title = document.getElementById('level-title');
+    const desc = document.getElementById('level-desc');
+    if (num) num.textContent = `${lvl.id}.`;
+    if (title) title.textContent = lvl.title;
+    if (desc) {
+      // render the main description and optional tips as HTML
+      let html = `<p>${lvl.desc}</p>`;
+      if (Array.isArray(lvl.tips) && lvl.tips.length) {
+        html += '<div class="level-tips"><strong></strong><ol>' + lvl.tips.map(t => `<li>${t}</li>`).join('') + '</ol></div>';
+      }
+      desc.innerHTML = html;
+    }
+    // clear any previous result message
+    const res = document.getElementById('answer-result'); if (res) res.style.display = 'none';
+  }
+
+  function showAnswerModalForLevel(id){
+    const modal = document.getElementById('answer-modal');
+    const img = document.getElementById('answer-image');
+    if (!modal || !img) return;
+    // placeholder inline SVG image
+    const svgData = encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='800' height='480'><rect width='100%' height='100%' fill='%23ffffff' /><text x='50%' y='50%' font-size='28' text-anchor='middle' fill='%236b7280'>Answer image placeholder</text></svg>`);
+    img.src = `data:image/svg+xml;utf8,${svgData}`;
+    modal.classList.add('visible');
+    modal.setAttribute('aria-hidden','false');
+  }
+
+  function closeAnswerModal(){
+    const modal = document.getElementById('answer-modal');
+    if (!modal) return;
+    modal.classList.remove('visible');
+    modal.setAttribute('aria-hidden','true');
+  }
+
+  function submitAnswer(){
+    // For now simply show congrats message briefly
+    const res = document.getElementById('answer-result');
+    if (!res) return;
+    res.textContent = 'Congrats!';
+    res.style.display = 'block';
+    // small highlight animation
+    res.style.opacity = '1';
+    setTimeout(()=>{ if (res) { res.style.display = 'none'; } }, 2200);
+  }
+
+  // wire up UI after DOM ready
+  document.addEventListener('DOMContentLoaded', ()=>{
+    initLevelSelector();
+    const showBtn = document.getElementById('show-answer');
+    const submitBtn = document.getElementById('submit-answer');
+    const modal = document.getElementById('answer-modal');
+    if (showBtn) showBtn.addEventListener('click', ()=>{
+      const sel = document.getElementById('level-select');
+      const id = sel ? Number(sel.value) : 0;
+      showAnswerModalForLevel(id);
+    });
+    if (submitBtn) submitBtn.addEventListener('click', ()=>{
+      submitAnswer();
+    });
+    if (modal) {
+      modal.querySelector('.overlay')?.addEventListener('click', closeAnswerModal);
+      modal.querySelector('.close')?.addEventListener('click', closeAnswerModal);
+    }
+  });
+
+})();

@@ -1,13 +1,13 @@
 .site-header { 
-    padding: 12px 16px; 
-    background: #ffffff; 
-    border-bottom: 1px solid #e5e7eb; 
-    position: sticky; 
-    top: 0; 
-    z-index: 2; 
+  padding: 12px 16px; 
+  background: #ffffff; 
+  border-bottom: 1px solid #e5e7eb; 
+  position: sticky; 
+  top: 0; 
+  z-index: 2; 
 }
 #main { 
-    font-size: 22px; 
+  font-size: 22px; 
     margin: 0; 
 }
 
@@ -18,10 +18,16 @@
 }
 
 #palette { 
-    width: 260px; 
-    padding: 16px; 
-    background: #fafafa; 
-    border-right: 1px solid #e5e7eb; 
+  /* Left column containing blocks (top) and properties (bottom) */
+  width: 360px; 
+  padding: 16px; 
+  background: #fafafa; 
+  border-right: 1px solid #e5e7eb; 
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-sizing: border-box;
+  height: calc(100vh - 80px);
 }
 #palette h2 { 
     font-size: 16px; 
@@ -33,6 +39,11 @@
 }
 
 .palette-list { display: grid; gap: 10px; }
+
+/* Blocks area sits in the upper 40% of the left column; properties take remaining 60% */
+.blocks-area { flex: 0 0 40%; overflow: auto; }
+
+#properties { flex: 1 1 60%; overflow: auto; }
 
 .main-area { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .workspace-wrap { display: flex; align-items: stretch; justify-content: center; width: 100%; gap: 16px; }
@@ -93,6 +104,43 @@
   z-index: 1;
 }
 
+/* Hover blurb styles */
+.hover-blurb {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  pointer-events: none;
+  transition: all 0.2s ease;
+  max-width: 280px;
+  transform: translate(-50%, 0);
+  background: white;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.hover-blurb.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -8px);
+}
+
+.hover-blurb .hb-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.hover-blurb .hb-desc {
+  font-size: 13px;
+  color: #4b5563;
+  line-height: 1.4;
+}
+
 .input {
   position: absolute;
   width: 14px;
@@ -148,9 +196,234 @@
 #prop-content { font-size: 13px; min-height: 120px; }
 .prop-actions { margin-top: 12px; display:flex; gap:8px }
 
+/* Hover blurb shown above properties for hovered parts */
+#hover-blurb { display:flex; gap:10px; align-items:center; padding:8px; border-radius:8px; background: linear-gradient(90deg,#fff7ed,#ffedd5); border:1px solid #fbbf24; margin-bottom:10px; box-shadow: 0 6px 12px rgba(0,0,0,0.04); }
+#hover-blurb { opacity: 0; transform: translateY(8px); transition: opacity 260ms ease, transform 260ms ease; pointer-events: none; }
+#hover-blurb.visible { opacity: 1; transform: none; pointer-events: auto; }
+#hover-blurb .hb-icon { width:36px; height:36px; border-radius:6px; background:#fff; display:flex; align-items:center; justify-content:center; font-weight:700; color:#111827; border:1px solid rgba(0,0,0,0.06); }
+#hover-blurb .hb-content { display:flex; flex-direction:column; }
+#hover-blurb .hb-title { font-weight:600; font-size:14px; }
+#hover-blurb .hb-desc { font-size:12px; color:#374151; }
+
+/* Ensure the #hover-blurb sits in the properties panel (not fixed on the page)
+   Override any global .hover-blurb fixed positioning so it aligns with the panel. */
+#hover-blurb {
+  position: static;
+  left: auto;
+  top: auto;
+  transform: none;
+}
+
+/* color variants per part type (applied via JS by adding a class like 'battery' or 'resistor') */
+.hover-blurb.battery { background: linear-gradient(90deg,#dcfce7,#ecfdf5); border-color:#34d399; }
+.hover-blurb.resistor { background: linear-gradient(90deg,#dbeafe,#eff6ff); border-color:#60a5fa; }
+.hover-blurb.led { background: linear-gradient(90deg,#fff7ed,#fff8f1); border-color:#f59e0b; }
+
 /* Small UI color tweaks */
 body { background: #f3f4f6; }
 .site-header { background: linear-gradient(90deg,#ffffff,#f8fafc); }
+
+/* Layout & theme variables */
+:root {
+  --bg: #f3f4f6;
+  --panel-bg: #f8fafc;
+  --muted: #6b7280;
+  --text: #111827;
+  --accent: #60a5fa;
+  --radius: 10px;
+  --font-size-base: 17px;
+}
+
+body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial; color:var(--text); font-size:var(--font-size-base); background:var(--bg); }
+
+.site-header { padding: 14px 20px; box-shadow: 0 6px 18px rgba(14,18,24,0.04); }
+.site-brand { display:flex; gap:12px; align-items:center; }
+.logo-mark { width:48px; height:48px; display:flex; align-items:center; justify-content:center; }
+.brand-text h1 { margin:0; font-size:20px; letter-spacing: -0.5px; }
+.brand-text .subtle { font-size:12px; color:var(--muted); }
+
+/* Slightly bigger base typography for better readability */
+h1, h2, h3 { line-height:1.15; }
+
+/* Larger, more prominent hover blurb */
+.hover-blurb {
+  position: fixed;
+  transform: translate(-50%, 0);
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  padding: 12px 16px;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  pointer-events: none;
+  transition: opacity 0.2s ease, visibility 0.2s ease, transform 0.2s ease;
+  max-width: 280px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  background: white;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+.hover-blurb .hb-icon { 
+  width: 44px; 
+  height: 44px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 600;
+  color: #111827;
+  margin-bottom: 8px;
+}
+
+.hover-blurb .hb-content { 
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hover-blurb .hb-title { 
+  font-weight: 600;
+  font-size: 14px;
+  color: #111827;
+  margin-bottom: 4px;
+}
+
+.hover-blurb .hb-desc { 
+  font-size: 13px;
+  color: #4b5563;
+  line-height: 1.4;
+}
+
+.hover-blurb .hb-extra { 
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.hover-blurb.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, -8px);
+}
+
+/* color variants per part type (applied via JS by adding a class like 'battery' or 'resistor') */
+#hover-blurb.battery { 
+  background: linear-gradient(90deg,#dcfce7,#ecfdf5); 
+  border-color: #34d399; 
+}
+
+#hover-blurb.resistor { 
+  background: linear-gradient(90deg,#dbeafe,#eff6ff); 
+  border-color: #60a5fa; 
+}
+
+#hover-blurb.led { 
+  background: linear-gradient(90deg,#fff7ed,#fff8f1); 
+  border-color: #f59e0b; 
+}
+
+#hover-blurb {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 16px;
+  border-radius: 8px;
+  background: linear-gradient(90deg,#fff7ed,#ffedd5);
+  border: 1px solid #fbbf24;
+  margin-bottom: 12px;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+  pointer-events: none;
+}
+
+#hover-blurb.visible {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+  animation: blurbPop 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes blurbPop {
+  0% { transform: scale(0.95) translateY(4px); }
+  50% { transform: scale(1.02) translateY(-1px); }
+  100% { transform: scale(1) translateY(0); }
+}
+
+/* Theme toggle */
+.theme-toggle { position: fixed; right: 16px; bottom: 16px; z-index: 20000; }
+.theme-toggle button { background: linear-gradient(90deg,#fff,#f3f4f6); border:1px solid rgba(0,0,0,0.06); padding:8px 10px; border-radius:999px; cursor:pointer; box-shadow: 0 8px 20px rgba(2,6,23,0.06); font-size:16px; }
+
+/* Dark mode styles */
+body.dark { --bg: #0b1220; --panel-bg: #111827; --muted: #9aa4b2; --text: #e6eef6; --accent: #60a5fa; }
+body.dark .site-header { background: linear-gradient(90deg,#071127,#0b1220); box-shadow: none; }
+body.dark #workspace { background: #f3f4f6; border-color: #111827; }
+/* In dark mode, apply grayer shades across sections; keep component blurbs colorful (so text stays dark on them) */
+body.dark .legend { background: #0b1220; border-color: rgba(255,255,255,0.04); }
+body.dark #properties { background: #0f1724; border-color: rgba(255,255,255,0.04); }
+body.dark #palette { background: #0b1220; border-right-color: rgba(255,255,255,0.04); }
+body.dark #workspace { background: #e9eef2; border-color: rgba(0,0,0,0.12); }
+
+/* Dark mode hover blurb - keep colorful gradients for better visibility */
+body.dark #hover-blurb { 
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+body.dark #hover-blurb .hb-title { 
+  color: #111827;
+}
+
+body.dark #hover-blurb .hb-desc { 
+  color: #4b5563;
+}
+
+/* Keep the same colorful backgrounds in dark mode for better visibility */
+body.dark #hover-blurb.battery { 
+  background: linear-gradient(90deg,#dcfce7,#ecfdf5);
+  border-color: #34d399;
+}
+
+body.dark #hover-blurb.resistor { 
+  background: linear-gradient(90deg,#dbeafe,#eff6ff);
+  border-color: #60a5fa;
+}
+
+body.dark #hover-blurb.led { 
+  background: linear-gradient(90deg,#fff7ed,#fff8f1);
+  border-color: #f59e0b;
+}
+
+/* Slight visual refresh for panels */
+#properties { background: var(--panel-bg); border-left: 1px solid rgba(0,0,0,0.06); padding: 16px; border-radius: 10px; }
+.palette-list .block { font-size: 15px; padding: 12px 14px; }
+
+/* Lesson / Level panel on the right */
+#lesson { width: 340px; background: var(--panel-bg); padding: 16px; border-left: 1px solid rgba(0,0,0,0.06); border-radius: 8px; box-sizing: border-box; }
+.lesson-top { display:flex; flex-direction:column; gap:6px; margin-bottom: 10px }
+.lesson-top label { font-size: 13px; color:var(--muted) }
+.lesson-top select { padding:8px 10px; border-radius:6px; border:1px solid rgba(0,0,0,0.08); background:white }
+.lesson-body { display:flex; flex-direction:column; gap:12px }
+.lesson-heading { font-weight:700; font-size:16px }
+.lesson-actions { display:flex; gap:8px }
+.lesson-actions button { padding:8px 12px; border-radius:6px; border:1px solid rgba(0,0,0,0.08); background:linear-gradient(90deg,#fff,#f3f4f6); cursor:pointer }
+.answer-result { margin-top:8px; padding:8px 10px; background:linear-gradient(90deg,#ecfeff,#f0f9ff); border-radius:6px; border:1px solid #9ee7ff; color:#065f46 }
+
+/* Modal for showing answer image */
+#answer-modal { position: fixed; inset: 0; display: none; align-items: center; justify-content: center; z-index: 30000; }
+#answer-modal.visible { display: flex; }
+#answer-modal .overlay { position:absolute; inset:0; background: rgba(0,0,0,0.5); }
+#answer-modal .modal { position: relative; z-index: 2; background: white; padding: 12px; border-radius: 10px; box-shadow: 0 20px 50px rgba(2,6,23,0.4); max-width: 80vw; max-height: 80vh; display:flex; flex-direction:column; gap:8px }
+#answer-modal .modal img { max-width: 90vw; max-height: 70vh; object-fit: contain; display:block }
+#answer-modal .modal .close { position:absolute; right:8px; top:8px; background:transparent; border:none; font-size:18px; cursor:pointer }
+
+/* Level tips styling */
+.level-tips { background: linear-gradient(90deg,#ffffff,#fbfbfd); border:1px solid rgba(0,0,0,0.04); padding:0px; border-radius:6px; font-size:15px; color:var(--muted) }
+.level-tips ol 
+
+/* workspace tweak */
+#workspace { box-shadow: 0 16px 36px rgba(2,6,23,0.06); }
 
 /* Prevent text selection while moving */
 .ct-moving { user-select: none; -webkit-user-select: none; }

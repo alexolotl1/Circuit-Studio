@@ -8,31 +8,80 @@
 </head>
 <body>
   <header class="site-header">
-    <h1 id="main">Circuit Teach</h1>
+    <div class="site-brand">
+      <div class="logo-mark" aria-hidden="true">
+        <!-- simple bolt / circuit SVG -->
+        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="2" width="20" height="20" rx="6" fill="#111827" opacity="0.06"/><path d="M13 3L4 14h6l-1 7 9-11h-6l1-7z" fill="#f59e0b"/></svg>
+      </div>
+      <div class="brand-text">
+        <h1 id="main">Circuit Studio</h1>
+        <div class="subtle">Interactive circuits & robotics learning</div>
+      </div>
+    </div>
   </header>
 
   <div class="app">
     <aside id="palette" aria-label="Block palette">
       <h2>Blocks</h2>
-      <div class="palette-list">
-        <div class="block palette" data-type="led">LED</div>
-        <div class="block palette" data-type="resistor">Resistor</div>
-        <div class="block palette" data-type="battery">Battery</div>
+      <div class="blocks-area">
+        <div class="palette-list">
+          <div class="block palette" data-type="led">LED</div>
+          <div class="block palette" data-type="resistor">Resistor</div>
+          <div class="block palette" data-type="battery">Battery</div>
+        </div>
+        <p class="hint">Drag a block into the workspace</p>
       </div>
-      <p class="hint">Drag a block into the workspace</p>
+
+      <!-- Properties moved under the palette on the left (40% blocks, 60% properties) -->
+      <div id="properties" aria-label="Properties panel">
+        <h3>Properties</h3>
+        <!-- System summary: Ohm's law values computed from workspace (simple aggregate) -->
+        <div id="system-summary" class="system-summary">
+          <h4>System</h4>
+          <div>Voltage: <span id="sys-voltage">—</span> V</div>
+          <div>Resistance: <span id="sys-resistance">—</span> Ω</div>
+          <div>Current: <span id="sys-current">—</span> A</div>
+        </div>
+        <!-- Hover blurb: shows contextual info about the part being hovered in palette or workspace -->
+        <div id="hover-blurb" class="hover-blurb" aria-live="polite">
+          <div class="hb-icon" aria-hidden="true">?</div>
+          <div class="hb-content"> 
+            <div class="hb-title">Hover a part</div>
+            <div class="hb-desc">Hover over a part in the palette or workspace to learn what it does.</div>
+            <div class="hb-extra" aria-hidden="true"></div>
+          </div>
+        </div>
+        <div id="prop-content">Select a block to edit properties</div>
+        <div class="prop-actions">
+          <button id="undo-btn">Undo</button>
+          <button id="save-btn">Save</button>
+          <input id="load-file" type="file" style="display:none" />
+          <button id="load-btn">Load</button>
+        </div>
+      </div>
     </aside>
 
     <main class="main-area">
       <div class="workspace-wrap">
         <div id="workspace" role="region" aria-label="Workspace (blocks stay within this box)"></div>
-        <aside id="properties" aria-label="Properties panel">
-          <h3>Properties</h3>
-          <div id="prop-content">Select a block to edit properties</div>
-          <div class="prop-actions">
-            <button id="undo-btn">Undo</button>
-            <button id="save-btn">Save</button>
-            <input id="load-file" type="file" style="display:none" />
-            <button id="load-btn">Load</button>
+
+        <!-- Lesson / Level panel on the right -->
+        <aside id="lesson" aria-label="Lesson panel">
+          <div class="lesson-top">
+            <label for="level-select">Choose level</label>
+            <select id="level-select">
+            </select>
+          </div>
+          <div class="lesson-body">
+            <div class="lesson-heading"><span id="level-num">0.</span> <span id="level-title">Welcome</span></div>
+            <p id="level-desc">Welcome to Circuit Studio — select a lesson on the right to get started.</p>
+
+            <div class="lesson-actions">
+              <button id="show-answer">Show Answer</button>
+              <button id="submit-answer">Submit Answer</button>
+            </div>
+
+            <div id="answer-result" class="answer-result" aria-live="polite" style="display:none">Congrats!</div>
           </div>
         </aside>
       </div>
@@ -47,5 +96,22 @@
 
   <script src="circuit-solver.js"></script>
   <script src="script.js"></script>
+  
+  <!-- Theme toggle (light / dark) -->
+  <div id="theme-toggle" class="theme-toggle" title="Toggle theme">
+    <button id="theme-btn" aria-label="Toggle color theme">🌞</button>
+  </div>
+
+  <!-- Answer modal (shows image for the lesson answer) -->
+  <div id="answer-modal" aria-hidden="true">
+    <div class="overlay" role="presentation"></div>
+    <div class="modal" role="dialog" aria-modal="true">
+      <button class="close" aria-label="Close answer">✕</button>
+      <img id="answer-image" src="" alt="Answer" />
+      <div class="modal-foot">
+        <!-- optional caption -->
+      </div>
+    </div>
+  </div>
 </body>
 </html>
