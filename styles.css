@@ -166,9 +166,11 @@
 
 /* LED powered state */
 .block[data-type="led"].powered {
-  background: #fffbeb; /* pale yellow */
-  border-color: #f59e0b;
-  box-shadow: 0 0 10px rgba(245,158,11,0.35);
+  /* base look when powered; --led-intensity (0..1) controls brightness */
+  --led-intensity: 0.6;
+  background: color-mix(in srgb, #fff  calc(80% - var(--led-intensity) * 40%), #fffbeb);
+  border-color: color-mix(in srgb, #f59e0b calc(40% + var(--led-intensity) * 60%), #f59e0b);
+  box-shadow: 0 0 calc(6px + var(--led-intensity) * 18px) rgba(245,158,11, calc(0.15 + var(--led-intensity) * 0.5));
 }
 
 /* Context menu minimal styling (created dynamically) */

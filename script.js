@@ -10,23 +10,9 @@ let selectedBlock = null;
 let hoverTimer = null;
 const undoStack = [];
 let hoverBlurbHideTimer = null;
-let lastSystemSummary = { voltage: null, resistance: null, current: null };
-
-function updateSystemSummaryUI(summary) {
-  try {
-    const sysVoltageEl = document.getElementById('sys-voltage');
-    const sysResistanceEl = document.getElementById('sys-resistance');
-    const sysCurrentEl = document.getElementById('sys-current');
-    if (!sysVoltageEl || !sysResistanceEl || !sysCurrentEl) return;
-    if (!summary) {
-      sysVoltageEl.textContent = '—'; sysResistanceEl.textContent = '—'; sysCurrentEl.textContent = '—';
-      return;
-    }
-    sysVoltageEl.textContent = (summary.voltage==null)?'—':Number(summary.voltage).toFixed(3);
-    sysResistanceEl.textContent = (summary.resistance==null)?'—':Number(summary.resistance).toFixed(3);
-    sysCurrentEl.textContent = (summary.current==null)?'—':String(summary.current);
-  } catch(e) { /* ignore UI errors */ }
-}
+// opt-in debug flag; set to true in the browser console to enable detailed logs
+let CT_DEBUG = false;
+// system summary removed
 
 // Data-driven hover blurbs for parts; easy to extend when adding parts
 const partBlurbs = {
@@ -125,7 +111,7 @@ function ensureContextMenu() {
     
     // Update connections if any
     if (connections.length > 0) {
-      updateWireConnections();
+      updateAllWires();
     }
   }
 
@@ -569,20 +555,13 @@ document.addEventListener('DOMContentLoaded', ()=>{
     else applyTheme('light');
   } catch(e) { if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) applyTheme('dark'); }
   if (themeBtn) themeBtn.addEventListener('click', ()=>{ applyTheme(document.body.classList.contains('dark') ? 'light' : 'dark'); });
-  // restore persisted system summary if present
-  try {
-    const saved = localStorage.getItem('ct-system-summary');
-    if (saved) {
-      lastSystemSummary = JSON.parse(saved);
-      updateSystemSummaryUI(lastSystemSummary);
-    }
-  } catch(e) {}
+  // system summary persistence removed
 });
 
 function exportCircuit(){
   const blocks = Array.from(workspace.querySelectorAll('.block')).map(b=>({ id:b.dataset.id, type:b.dataset.type, dataset:{...b.dataset}, left:b.style.left, top:b.style.top }));
   const conns = connections.map(c=>({ conn1BlockId:c.conn1.dataset.blockId, conn1Terminal:c.conn1.dataset.terminal, conn2BlockId:c.conn2.dataset.blockId, conn2Terminal:c.conn2.dataset.terminal }));
-  return { blocks, conns, systemSummary: lastSystemSummary };
+  return { blocks, conns };
 }
 
 function importCircuit(data){
@@ -605,12 +584,7 @@ function importCircuit(data){
     const conn2 = b2.querySelector(`.input.${c.conn2Terminal}`);
     if (conn1 && conn2) createWire(conn1, conn2);
   });
-  // restore system summary if present
-  if (data.systemSummary) {
-    lastSystemSummary = data.systemSummary;
-    updateSystemSummaryUI(lastSystemSummary);
-    try { localStorage.setItem('ct-system-summary', JSON.stringify(lastSystemSummary)); } catch(e){}
-  }
+  // system summary import removed
   evaluateCircuit();
 }
 
@@ -646,9 +620,29 @@ function handleConnectorClick(e, connector) {
 
 // --- Draw a wire between two connectors ---
 function createWire(conn1, conn2) {
+  // Validate connectors: must be elements inside the workspace and be input elements
+  if (!conn1 || !conn2) return;
+  if (!(conn1 instanceof Element) || !(conn2 instanceof Element)) return;
+  // prevent connecting a connector to itself or to a connector on the same block
+  if (conn1 === conn2) return;
+  const b1 = conn1.closest('.block');
+  const b2 = conn2.closest('.block');
+  if (!b1 || !b2) return; // must be inside a block
+  if (b1 === b2) return; // don't wire within same block
+
+  // Prevent duplicates: check existing connections
+  for (const c of connections) {
+    if (!c.conn1 || !c.conn2) continue;
+    if ((c.conn1 === conn1 && c.conn2 === conn2) || (c.conn1 === conn2 && c.conn2 === conn1)) return;
+  }
+
   const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
   line.setAttribute("stroke", "#222");
   line.setAttribute("stroke-width", "2");
+  line.setAttribute('stroke-linecap', 'round');
+  // store lightweight metadata for inspection/debugging
+  line.dataset.from = `${conn1.dataset.blockId || '?'}/${conn1.dataset.terminal || '?'}`;
+  line.dataset.to = `${conn2.dataset.blockId || '?'}/${conn2.dataset.terminal || '?'}`;
 
   svg.appendChild(line);
 
@@ -661,19 +655,33 @@ function createWire(conn1, conn2) {
 // --- Update wire position ---
 function updateWirePosition(conn) {
   const { conn1, conn2, line } = conn;
-  const rect1 = conn1.getBoundingClientRect();
-  const rect2 = conn2.getBoundingClientRect();
-  const wsRect = workspace.getBoundingClientRect();
+  if (!line) return;
+  if (!conn1 || !conn2) {
+    // remove any orphaned line
+    if (line.parentNode) line.parentNode.removeChild(line);
+    return;
+  }
+  // sometimes connectors are removed; guard against that
+  try {
+    const rect1 = conn1.getBoundingClientRect();
+    const rect2 = conn2.getBoundingClientRect();
+    const wsRect = workspace.getBoundingClientRect();
 
-  const x1 = rect1.left + rect1.width / 2 - wsRect.left;
-  const y1 = rect1.top + rect1.height / 2 - wsRect.top;
-  const x2 = rect2.left + rect2.width / 2 - wsRect.left;
-  const y2 = rect2.top + rect2.height / 2 - wsRect.top;
+    const x1 = rect1.left + rect1.width / 2 - wsRect.left;
+    const y1 = rect1.top + rect1.height / 2 - wsRect.top;
+    const x2 = rect2.left + rect2.width / 2 - wsRect.left;
+    const y2 = rect2.top + rect2.height / 2 - wsRect.top;
 
-  line.setAttribute("x1", x1);
-  line.setAttribute("y1", y1);
-  line.setAttribute("x2", x2);
-  line.setAttribute("y2", y2);
+    line.setAttribute("x1", x1);
+    line.setAttribute("y1", y1);
+    line.setAttribute("x2", x2);
+    line.setAttribute("y2", y2);
+  } catch (e) {
+    // if anything goes wrong, safely remove line and its connection entry
+    try { if (line.parentNode) line.parentNode.removeChild(line); } catch (er) {}
+    const idx = connections.findIndex(c => c.line === line);
+    if (idx >= 0) connections.splice(idx, 1);
+  }
 }
 
 // --- Update all wires when blocks move ---
@@ -740,6 +748,19 @@ function evaluateCircuit() {
   const netMap = new Map(); let netCounter = 0;
   function netFor(conn){ const idx = cIndex.get(conn); if (idx==null) return null; const r = netId[idx]; if (!netMap.has(r)) netMap.set(r, netCounter++); return netMap.get(r); }
 
+  // Debug: print mapping of connectors -> net ids
+  if (CT_DEBUG) {
+    try {
+      console.debug('CT: connectorList count', connectorList.length);
+      connectorList.forEach((c,i)=>{
+        const nid = netFor(c);
+        const bid = c.dataset.blockId || '(no-block)';
+        const term = c.dataset.terminal || '(no-term)';
+        console.debug(`CT: connector[${i}] block=${bid} term=${term} net=${nid}`);
+      });
+    } catch (e) { console.debug('CT: debug mapping failed', e); }
+  }
+
   // Collect elements for solver
   const resistors = []; const vSources = []; const diodes = [];
   blocks.forEach(b => {
@@ -752,11 +773,14 @@ function evaluateCircuit() {
     else if (b.dataset.type === 'led') diodes.push({ n1: nb, n2: na, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
   });
 
+  if (CT_DEBUG) {
+    try {
+      console.debug('CT: solver inputs', { N: N, resistors, vSources, diodes });
+    } catch (e) { console.debug('CT: debug inputs failed', e); }
+  }
+
   if (netMap.size === 0) {
-    // no nets: show zeros for system summary (components present but not connected)
-    lastSystemSummary = { voltage: 0, resistance: 0, current: 0 };
-    try { localStorage.setItem('ct-system-summary', JSON.stringify(lastSystemSummary)); } catch(e){}
-    updateSystemSummaryUI(lastSystemSummary);
+    // no nets: nothing to evaluate
     return;
   }
   const N = netMap.size;
@@ -767,6 +791,9 @@ function evaluateCircuit() {
   if (!sol || !sol.success) { fallbackSimplePowering(); return; }
 
   // annotate results
+  if (CT_DEBUG) {
+    try { console.debug('CT: solver output', sol); } catch (e) { console.debug('CT: debug output failed', e); }
+  }
   const V = sol.V; const J = sol.J || [];
   if (sol.resistorResults) {
     sol.resistorResults.forEach((rres, idx) => {
@@ -777,9 +804,27 @@ function evaluateCircuit() {
   if (sol.diodeResults) {
     sol.diodeResults.forEach((dres, idx) => {
       const meta = diodes[idx]; if (!meta || !meta.block) return;
-      meta.block.dataset.voltageDrop = String(dres.Vd||0); meta.block.dataset.current = String(Math.abs(dres.I||0));
-      if ((dres.Vd || 0) >= (meta.Vf || 2) && Math.abs(dres.I||0) > 1e-9) { meta.block.dataset.powered='true'; meta.block.classList.add('powered'); }
-      else { meta.block.dataset.powered='false'; meta.block.classList.remove('powered'); }
+      // update LED metrics
+      const I = Math.abs(dres.I || 0);
+      const Vd = (dres.Vd || 0);
+      meta.block.dataset.voltageDrop = String(Vd);
+      meta.block.dataset.current = String(I);
+      // Consider LED powered if forward voltage is reached and current exceeds micro-amp threshold
+      const Vf = Number(meta.Vf || meta.block.dataset.forwardVoltage || 2);
+      const Ithreshold = 1e-6; // 1 microamp minimal visible current
+      if (Vd >= Vf && I > Ithreshold) {
+        meta.block.dataset.powered = 'true';
+        meta.block.classList.add('powered');
+      } else {
+        meta.block.dataset.powered = 'false';
+        meta.block.classList.remove('powered');
+      }
+      // set LED visual intensity proportional to current (clamped)
+      try {
+        const maxVisualI = 0.02; // 20 mA typical LED bright
+        const intensity = Math.min(1, I / maxVisualI);
+        meta.block.style.setProperty('--led-intensity', String(intensity));
+      } catch (e) { }
     });
   }
   // annotate voltage source currents if provided
@@ -787,29 +832,86 @@ function evaluateCircuit() {
     vSources.forEach((vs, idx) => { if (!vs.block) return; vs.block.dataset.current = String(Math.abs(sol.J[idx]||0)); vs.block.dataset.voltageDrop = String(vs.V||0); });
   }
 
-  // --- simple system summary (aggregate for user) ---
+  // If solver didn't produce diodeResults (e.g., LED modeled elsewhere), try a simple heuristic:
+  // mark any LED as powered if it's in a complete series path from battery -> resistor -> LED -> battery
+  // This is a fallback for circuits where diode modeling didn't return results.
   try {
-    const sysVoltageEl = document.getElementById('sys-voltage');
-    const sysResistanceEl = document.getElementById('sys-resistance');
-    const sysCurrentEl = document.getElementById('sys-current');
-    if (sysVoltageEl && sysResistanceEl && sysCurrentEl) {
-      // total source voltage: sum of absolute battery voltages (heuristic)
-      const totalV = vSources.reduce((s, vs) => s + (isFinite(vs.V) ? Math.abs(Number(vs.V)||0) : 0), 0);
-      // equivalent resistance: simple series sum of resistors that are inside workspace
-      const totalR = resistors.reduce((s, r) => s + (isFinite(r.R) ? Math.abs(Number(r.R)||0) : 0), 0);
-      // compute current via Ohm's law (guard against zero R)
-      const I = (totalR > 1e-15) ? (totalV / totalR) : 0;
-      sysVoltageEl.textContent = Number(totalV).toFixed(3);
-      sysResistanceEl.textContent = Number(totalR).toFixed(3);
-      sysCurrentEl.textContent = Number(I).toExponential(6);
-      // cache & persist and update UI
-      lastSystemSummary = { voltage: totalV, resistance: totalR, current: Number(I).toExponential(6) };
-      try { localStorage.setItem('ct-system-summary', JSON.stringify(lastSystemSummary)); } catch(e){}
-      updateSystemSummaryUI(lastSystemSummary);
+    const leds = Array.from(diodes || []).map(d => d.block).filter(Boolean);
+    if (leds.length) {
+      leds.forEach(b => {
+        if (b.dataset.powered === 'true') return; // already set via solver
+        // simple heuristic: if LED has a nonzero voltage drop recorded (from adjacent resistor annotation) or current, use that
+        const I = Math.abs(Number(b.dataset.current) || 0);
+        const Vd = Math.abs(Number(b.dataset.voltageDrop) || 0);
+        const Vf = Number(b.dataset.forwardVoltage || 2);
+        if ((Vd >= Vf && I > 1e-6) || I > 1e-6) { b.dataset.powered = 'true'; b.classList.add('powered'); }
+  try { const maxVisualI = 0.02; const intensity = Math.min(1, I / maxVisualI); b.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
+      });
     }
-  } catch (e) {
-    // ignore UI update errors
-  }
+  } catch (e) { /* ignore fallback errors */ }
+
+  // Additional robust path-based powering heuristic:
+  // Build net adjacency from components (exclude voltage sources) and search for paths
+  try {
+    // Build adjacency: netId -> [{ toNet, type, meta }]
+    const adj = new Map();
+    function addAdj(a,b,meta){ if (a==null || b==null) return; if (!adj.has(a)) adj.set(a,[]); adj.get(a).push({to:b, meta}); if (!adj.has(b)) adj.set(b,[]); adj.get(b).push({to:a, meta}); }
+    // add resistors and diodes as edges
+    resistors.forEach((r, idx) => { addAdj(r.n1, r.n2, { type: 'resistor', R: Number(r.R)||0, block: r.block, idx }); });
+    diodes.forEach((d, idx) => { addAdj(d.n1, d.n2, { type: 'led', Vf: d.Vf || Number(d.block?.dataset?.forwardVoltage)||2, block: d.block, idx, n1: d.n1, n2: d.n2 }); });
+
+    // helper BFS to find path of nets excluding using any battery edges
+    function findPath(startNet, endNet){
+      if (startNet==null || endNet==null) return null;
+      const q = [{ net: startNet, via: null }];
+      const seen = new Map(); // net -> { prevNet, viaMeta }
+      seen.set(startNet, { prev: null, via: null });
+      while (q.length){ const cur = q.shift(); const list = adj.get(cur.net) || []; for (const e of list){ const to = e.to; if (seen.has(to)) continue; seen.set(to, { prev: cur.net, via: e.meta }); if (to === endNet) { // reconstruct path
+            const path = []; let curN = to; while (curN !== startNet){ const info = seen.get(curN); path.unshift({ net: curN, via: info.via }); curN = info.prev; } path.unshift({ net: startNet, via: null }); return path; }
+          q.push({ net: to, via: e.meta }); }
+      }
+      return null;
+    }
+
+    // For each battery, try to find a non-trivial path from plus to minus
+    vSources.forEach(vs => {
+      if (!vs || vs.nPlus==null || vs.nMinus==null) return;
+      const path = findPath(vs.nPlus, vs.nMinus);
+      if (!path || path.length < 3) return; // trivial or no path
+      // compute series resistance along path and collect LED edges encountered with orientation
+      let Rsum = 0; const ledsOnPath = [];
+      for (let i=1;i<path.length;i++){
+        const via = path[i].via; if (!via) continue; if (via.type === 'resistor') Rsum += (Number(via.R) || 0); else if (via.type === 'led') {
+          // determine traversal direction: we moved from prev net to this net; find if that corresponds to n1->n2 (forward)
+          const prevNet = path[i-1].net; const curNet = path[i].net;
+          let forward = false;
+          if (via.n1 != null && via.n2 != null) {
+            // if prevNet === n1 and curNet === n2, we traversed anode->cathode
+            if (prevNet === via.n1 && curNet === via.n2) forward = true;
+            // if prevNet === n2 and curNet === via.n1, then we traversed reverse
+          }
+          ledsOnPath.push({ meta: via, forward, block: via.block });
+        }
+      }
+      // estimate current: if Rsum > 0, I = V / Rsum; otherwise treat as small (avoid infinite)
+      const Vb = Number(vs.V) || 0;
+      const Iest = Rsum > 0 ? Math.abs(Vb) / Rsum : 1e-3; // if no resistor, small conservative current
+      const Ith = 1e-6;
+      if (Iest > Ith && ledsOnPath.length){
+        ledsOnPath.forEach(l => {
+          if (!l.block) return;
+          // only mark if orientation is forward (anode->cathode) or if unknown, mark anyway
+          if (l.forward || l.forward == null) {
+            l.block.dataset.powered = 'true'; l.block.classList.add('powered');
+            // set intensity proportional to Iest, reuse same maxVisualI as elsewhere
+            try { const maxVisualI = 0.02; const intensity = Math.min(1, Iest / maxVisualI); l.block.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
+          }
+        });
+      }
+    });
+  } catch(e) { /* non-critical */ }
+
+  // system summary logic removed
 }
 
 // Update tooltip contents for a block element
