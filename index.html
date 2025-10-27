@@ -58,8 +58,13 @@
     <main class="main-area">
       <div class="workspace-wrap">
         <div id="workspace" role="region" aria-label="Workspace (blocks stay within this box)"></div>
+        <!-- Top-right quick actions (undo) -->
+        <div id="workspace-actions" aria-hidden="false">
+          <button id="undo-top" class="sim-btn" title="Undo last action">Undo</button>
+        </div>
         <!-- Simulation controls overlay (Run/Stop) -->
         <div id="sim-controls" aria-hidden="false">
+          <button id="sim-basic" class="sim-btn">Run Basic Simulation</button>
           <button id="sim-run" class="sim-btn">Run Simulation</button>
           <button id="sim-test" class="sim-btn sim-test-btn" title="Load a known-good test circuit">Load Test Circuit</button>
         </div>

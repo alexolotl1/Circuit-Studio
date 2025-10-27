@@ -682,13 +682,32 @@ function importCircuit(data){
     workspace.appendChild(b); makeMovable(b);
   });
   data.conns.forEach(c=>{
-    const b1 = Array.from(workspace.querySelectorAll('.block')).find(x=>x.dataset.id===c.conn1BlockId);
-    const b2 = Array.from(workspace.querySelectorAll('.block')).find(x=>x.dataset.id===c.conn2BlockId);
-    if (!b1 || !b2) return;
+    // Try to resolve both blocks referenced by the connection. If missing, record and warn after.
+    const allBlocks = Array.from(workspace.querySelectorAll('.block'));
+    // primary match by dataset.id, fallback to element id if present
+    const b1 = allBlocks.find(x => x.dataset.id === c.conn1BlockId || x.id === c.conn1BlockId);
+    const b2 = allBlocks.find(x => x.dataset.id === c.conn2BlockId || x.id === c.conn2BlockId);
+    if (!b1 || !b2) {
+      // record missing connection entries for later reporting (do not throw)
+      if (!importCircuit._missingConns) importCircuit._missingConns = [];
+      importCircuit._missingConns.push({ requested: c, found1: !!b1, found2: !!b2 });
+      return;
+    }
     const conn1 = b1.querySelector(`.input.${c.conn1Terminal}`);
     const conn2 = b2.querySelector(`.input.${c.conn2Terminal}`);
     if (conn1 && conn2) createWire(conn1, conn2);
   });
+  // Report any connection entries that referenced non-existent blocks so users can fix JSON
+  if (importCircuit._missingConns && importCircuit._missingConns.length) {
+    try {
+      console.warn('CT: importCircuit - some connections referenced missing blocks:', importCircuit._missingConns);
+      updateSimBanner(`Import: ${importCircuit._missingConns.length} connection(s) referenced missing block IDs. Check the JSON and console for details.`, 'error', true);
+      // keep the missingConns visible briefly
+      setTimeout(()=>{ updateSimBanner('', 'ok', false); }, 4000);
+    } catch(e) { console.warn('CT: failed to report missing conns', e); }
+    // clear for next import
+    importCircuit._missingConns = [];
+  }
   // system summary import removed
   evaluateCircuit();
 }
@@ -888,7 +907,24 @@ function evaluateCircuit() {
   }
 
   if (netMap.size === 0) {
-    // no nets: nothing to evaluate
+    // no nets detected: collect helpful debug info and show banner so user can inspect
+    try {
+      console.warn('CT: evaluateCircuit - no nets detected. connectorCount=', connectorList.length, 'connections=', connections.length);
+      if (!CT_DEBUG) {
+        // provide a friendly banner message when not in CT_DEBUG mode
+        updateSimBanner('No nets detected: components may not be connected (or connection IDs mismatch). Check wiring or imported JSON. See console for details.', 'error', true);
+        setTimeout(()=>{ clearSimBanner(); }, 4000);
+      } else {
+        // print verbose mapping when CT_DEBUG
+        connectorList.forEach((c,i)=>{
+          const nid = netFor(c);
+          const bid = c.dataset.blockId || '(no-block)';
+          const term = c.dataset.terminal || '(no-term)';
+          console.debug(`CT: connector[${i}] block=${bid} term=${term} net=${nid}`);
+        });
+        console.debug('CT: connections (raw):', connections.map(c=>({ from: c.conn1?.dataset?.blockId, to: c.conn2?.dataset?.blockId, line: c.line?.dataset }))); 
+      }
+    } catch(e) { console.debug('CT: debug-no-nets failed', e); }
     return { success: false, reason: 'no-nets' };
   }
   const N = netMap.size;
@@ -1027,6 +1063,112 @@ function evaluateCircuit() {
 
   // system summary logic removed
   return { success: true, sol };
+}
+
+// Build a lightweight circuit model (connectors, nets, components) that can be
+// consumed by either the advanced MNA solver or the basic fallback solver.
+function buildCircuitModel(){
+  const connectorList = Array.from(workspace.querySelectorAll('.input'));
+  const cIndex = new Map(connectorList.map((c,i) => [c,i]));
+  const parent = connectorList.map((_,i) => i);
+  function find(i){ return parent[i]===i?i:(parent[i]=find(parent[i])); }
+  function union(i,j){ const ri=find(i), rj=find(j); if(ri!==rj) parent[rj]=ri; }
+  connections.forEach(c => { if (!c.conn1 || !c.conn2) return; const i=cIndex.get(c.conn1), j=cIndex.get(c.conn2); if (i!=null && j!=null) union(i,j); });
+  const netId = connectorList.map((_,i) => find(i));
+  const netMap = new Map(); let netCounter = 0;
+  function netFor(conn){ const idx = cIndex.get(conn); if (idx==null) return null; const r = netId[idx]; if (!netMap.has(r)) netMap.set(r, netCounter++); return netMap.get(r); }
+
+  // Collect components
+  const blocks = Array.from(workspace.querySelectorAll('.block'));
+  const resistors = []; const vSources = []; const diodes = [];
+  blocks.forEach(b => {
+    const left = b.querySelector('.input.left');
+    const right = b.querySelector('.input.right');
+    if (!left || !right) return;
+    const na = netFor(left); const nb = netFor(right);
+    if (b.dataset.type === 'resistor') resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
+    else if (b.dataset.type === 'battery') vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
+    else if (b.dataset.type === 'led') diodes.push({ n1: nb, n2: na, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
+  });
+
+  return { connectorList, cIndex, netMap, netFor, resistors, vSources, diodes };
+}
+
+// Basic solver runner state
+let isBasicSimRunning = false;
+let basicSimInterval = null;
+
+function applyBasicResults(results){
+  // results: { resistorResults:[{idx,I,v1,v2}], diodeResults:[{idx,I,Vd,forward}] }
+  try {
+    if (results.resistorResults) results.resistorResults.forEach(rr => {
+      const meta = rr.meta; if (!meta || !meta.block) return;
+      meta.block.dataset.current = String(Math.abs(rr.I||0));
+      meta.block.dataset.voltageDrop = String(Math.abs(rr.Vdrop||0));
+    });
+    if (results.diodeResults) results.diodeResults.forEach(dr => {
+      const meta = dr.meta; if (!meta || !meta.block) return;
+      const I = Math.abs(dr.I||0); const Vd = dr.Vd || 0;
+      meta.block.dataset.current = String(I);
+      meta.block.dataset.voltageDrop = String(Vd);
+      if (dr.forward && I > 1e-6) { meta.block.dataset.powered = 'true'; meta.block.classList.add('powered'); }
+      else { meta.block.dataset.powered = 'false'; meta.block.classList.remove('powered'); }
+      try { const maxVisualI = 0.02; const intensity = Math.min(1, I / maxVisualI); meta.block.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
+    });
+    // Additional pass: ensure any LED that has a measurable current or sufficient V is marked powered
+    try {
+      const leds = Array.from(workspace.querySelectorAll('.block[data-type="led"]'));
+      leds.forEach(lb => {
+        const I = Math.abs(Number(lb.dataset.current) || 0);
+        const Vd = Math.abs(Number(lb.dataset.voltageDrop) || 0);
+        const Vf = Number(lb.dataset.forwardVoltage || lb.dataset.forwardvoltage || 2);
+        const Ith = 1e-6;
+        if (I > Ith || Vd >= Vf) {
+          lb.dataset.powered = 'true'; lb.classList.add('powered');
+          try { const maxVisualI = 0.02; const intensity = Math.min(1, Math.max(I, 1e-6) / maxVisualI); lb.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
+          // ensure dataset.current/voltageDrop exist for tooltip clarity
+          if (!lb.dataset.current || Number(lb.dataset.current) === 0) lb.dataset.current = String(Math.max(I, 1e-6));
+          if (!lb.dataset.voltageDrop || Number(lb.dataset.voltageDrop) === 0) lb.dataset.voltageDrop = String(Math.max(Vd, Vf));
+        } else {
+          lb.dataset.powered = 'false'; lb.classList.remove('powered');
+        }
+      });
+    } catch(e) { /* non-critical */ }
+  } catch(e){ console.debug('CT: applyBasicResults failed', e); }
+}
+
+function runBasicOnce(){
+  const model = buildCircuitModel();
+  if (!model || !model.netMap || model.netMap.size === 0) { updateSimBanner('Basic sim: no nets detected (check wiring or import).','error',true); setTimeout(()=>clearSimBanner(),3000); return; }
+  if (!window.SimpleSolver || !window.SimpleSolver.simulate) { updateSimBanner('Basic sim backend not loaded.', 'error', true); setTimeout(()=>clearSimBanner(),2000); return; }
+  const res = window.SimpleSolver.simulate(model);
+  if (res && res.success) { applyBasicResults(res); } else { updateSimBanner('Basic sim failed to produce results.', 'error', true); setTimeout(()=>clearSimBanner(),2000); }
+  return res;
+}
+
+function startBasicSimulation(button){
+  if (isBasicSimRunning) return;
+  isBasicSimRunning = true; disableEditingDuringSim(true);
+  if (button) { button.classList.add('stop'); button.textContent = 'Stop Basic'; }
+  updateSimBanner('Basic simulation running…','ok',true);
+  // ensure simple solver script is loaded (dynamic load)
+  if (!window.SimpleSolver) {
+    const s = document.createElement('script'); s.src = './simple-solver.js'; s.onload = ()=>{ console.info('CT: SimpleSolver loaded'); };
+    s.onerror = ()=>{ updateSimBanner('Failed to load SimpleSolver.js', 'error', true); };
+    document.body.appendChild(s);
+  }
+  // immediate run
+  try { runBasicOnce(); } catch(e){ console.error(e); }
+  basicSimInterval = setInterval(()=>{ runBasicOnce(); }, 700);
+}
+
+function stopBasicSimulation(button){
+  if (!isBasicSimRunning) return;
+  isBasicSimRunning = false; disableEditingDuringSim(false);
+  if (button) { button.classList.remove('stop'); button.textContent = 'Run Basic Simulation'; }
+  if (basicSimInterval) { clearInterval(basicSimInterval); basicSimInterval = null; }
+  updateSimBanner('Basic simulation stopped.', 'ok', true);
+  setTimeout(()=>clearSimBanner(),1200);
 }
 
 // Update tooltip contents for a block element
@@ -1282,12 +1424,23 @@ function fallbackSimplePowering() {
     // ensure tooltip exists early so hover tooltips always work
     ensureTooltipElement();
     // simulation controls
-    const simBtn = document.getElementById('sim-run');
-    if (simBtn){
-      simBtn.addEventListener('click', ()=>{
-        if (!isSimRunning) startSimulation(simBtn); else stopSimulation(simBtn);
-      });
-    }
+      // simulation controls
+      const simBtn = document.getElementById('sim-run');
+      if (simBtn){
+        simBtn.addEventListener('click', ()=>{
+          if (!isSimRunning) startSimulation(simBtn); else stopSimulation(simBtn);
+        });
+      }
+      // basic/simple solver control
+      const basicBtn = document.getElementById('sim-basic');
+      if (basicBtn){
+        basicBtn.addEventListener('click', ()=>{
+          if (!isBasicSimRunning) startBasicSimulation(basicBtn); else stopBasicSimulation(basicBtn);
+        });
+      }
+      // top-right undo button (quick workspace undo)
+      const undoTopBtn = document.getElementById('undo-top');
+      if (undoTopBtn) undoTopBtn.addEventListener('click', ()=>{ undo(); });
     // create sim banner element once
     ensureSimBanner();
     initLevelSelector();
