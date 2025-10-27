@@ -180,6 +180,36 @@ const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
 svg.setAttribute("class", "wire-layer");
 workspace.appendChild(svg);
 
+// small counter for user-created wire nodes (bend points)
+let _wireNodeCounter = 1;
+
+// create a visual/interactive wire node (bend point) at workspace coords
+function createWireNode(x, y){
+  const n = document.createElement('div');
+  n.className = 'wire-node input';
+  n.dataset.blockId = `node${_wireNodeCounter++}`;
+  n.dataset.terminal = 'node';
+  n.style.position = 'absolute';
+  // position: if x is a px string (import), use directly; otherwise treat as client coords
+  if (typeof x === 'string' && x.indexOf('px')>=0){
+    n.style.left = x; n.style.top = y || '0px';
+  } else {
+    const wsRect = workspace.getBoundingClientRect();
+    n.style.left = (x - wsRect.left - 6) + 'px';
+    n.style.top = (y - wsRect.top - 6) + 'px';
+  }
+  n.style.width = '12px'; n.style.height = '12px'; n.style.borderRadius = '6px'; n.style.background = '#444'; n.style.zIndex = 60; n.title = 'wire node';
+  // make node clickable as a connector
+  n.addEventListener('click', e => { e.stopPropagation(); handleConnectorClick(e, n); });
+  // small drag support for repositioning nodes
+  let moving=false, sx, sy, ox, oy;
+  n.addEventListener('mousedown', e=>{ if (e.button!==0) return; moving=true; sx=e.clientX; sy=e.clientY; const rect=n.getBoundingClientRect(); ox=rect.left; oy=rect.top; document.body.classList.add('ct-moving'); e.stopPropagation(); });
+  document.addEventListener('mousemove', e=>{ if (!moving) return; const wsRect = workspace.getBoundingClientRect(); const nx = ox + (e.clientX - sx); const ny = oy + (e.clientY - sy); n.style.left = (nx - wsRect.left) + 'px'; n.style.top = (ny - wsRect.top) + 'px'; updateAllWires(); });
+  document.addEventListener('mouseup', e=>{ if (moving){ moving=false; document.body.classList.remove('ct-moving'); evaluateCircuit(); } });
+  workspace.appendChild(n);
+  return n;
+}
+
 // create a simple custom context menu (hidden by default)
 function ensureContextMenu() {
   if (contextMenu) return;
@@ -584,8 +614,10 @@ function updatePropertiesPanel(block) {
 function pushUndo() {
   // snapshot minimal state: blocks (type, id, dataset, position) and connections (indexes by connector)
   const blocks = Array.from(workspace.querySelectorAll('.block')).map(b=>({ id: b.dataset.id, type: b.dataset.type, dataset: {...b.dataset}, left: b.style.left, top: b.style.top }));
+  // include wire nodes in snapshot
+  const nodes = Array.from(workspace.querySelectorAll('.wire-node')).map(n=>({ id: n.dataset.blockId, type: 'node', dataset:{...n.dataset}, left: n.style.left, top: n.style.top }));
   const conns = connections.map(c=>({ conn1BlockId: c.conn1.dataset.blockId, conn1Terminal: c.conn1.dataset.terminal, conn2BlockId: c.conn2.dataset.blockId, conn2Terminal: c.conn2.dataset.terminal }));
-  undoStack.push({ blocks, conns });
+  undoStack.push({ blocks: blocks.concat(nodes), conns });
   if (undoStack.length > 50) undoStack.shift();
 }
 
@@ -599,12 +631,17 @@ function undo() {
   workspace.querySelectorAll('.block').forEach(b=>b.remove());
   // recreate blocks
   snap.blocks.forEach(bdata=>{
-    const b = createBlockInstance(bdata.type);
-    b.dataset.id = bdata.id;
-    Object.keys(bdata.dataset||{}).forEach(k=>b.dataset[k]=bdata.dataset[k]);
-    b.style.position='absolute'; b.style.left = bdata.left; b.style.top = bdata.top; b.classList.add('instance');
-    workspace.appendChild(b);
-    makeMovable(b);
+    if (bdata.type === 'node'){
+      const node = createWireNode(bdata.left || '0px', bdata.top || '0px');
+      node.dataset.blockId = bdata.id;
+    } else {
+      const b = createBlockInstance(bdata.type);
+      b.dataset.id = bdata.id;
+      Object.keys(bdata.dataset||{}).forEach(k=>b.dataset[k]=bdata.dataset[k]);
+      b.style.position='absolute'; b.style.left = bdata.left; b.style.top = bdata.top; b.classList.add('instance');
+      workspace.appendChild(b);
+      makeMovable(b);
+    }
   });
   // recreate connections
   snap.conns.forEach(c=>{
@@ -645,6 +682,17 @@ document.addEventListener('DOMContentLoaded', ()=>{
     updateHoverBlurb(null);
   });
 
+// Allow right-click in workspace to create a wire node when a connector is selected
+workspace.addEventListener('contextmenu', e => {
+  if (!selectedConnector) return; // only used when we're mid-connection
+  e.preventDefault();
+  const node = createWireNode(e.clientX, e.clientY);
+  // connect selectedConnector -> node and set node as new selectedConnector so user can continue
+  createWire(selectedConnector, node);
+  try { if (selectedConnector && selectedConnector.classList) selectedConnector.classList.remove('selected'); } catch(e){}
+  selectedConnector = node; node.classList.add('selected');
+});
+
   // Theme toggle initialization (light/dark)
   const themeBtn = document.getElementById('theme-btn');
   function applyTheme(t) {
@@ -665,8 +713,11 @@ document.addEventListener('DOMContentLoaded', ()=>{
 
 function exportCircuit(){
   const blocks = Array.from(workspace.querySelectorAll('.block')).map(b=>({ id:b.dataset.id, type:b.dataset.type, dataset:{...b.dataset}, left:b.style.left, top:b.style.top }));
+  // include wire nodes so they can be persisted
+  const nodes = Array.from(workspace.querySelectorAll('.wire-node')).map(n=>({ id: n.dataset.blockId, type: 'node', dataset: {...n.dataset}, left: n.style.left || '0px', top: n.style.top || '0px' }));
+  const allBlocks = blocks.concat(nodes);
   const conns = connections.map(c=>({ conn1BlockId:c.conn1.dataset.blockId, conn1Terminal:c.conn1.dataset.terminal, conn2BlockId:c.conn2.dataset.blockId, conn2Terminal:c.conn2.dataset.terminal }));
-  return { blocks, conns };
+  return { blocks: allBlocks, conns };
 }
 
 function importCircuit(data){
@@ -675,26 +726,34 @@ function importCircuit(data){
   connections.forEach(c=>{ if (c.line && c.line.parentNode) c.line.parentNode.removeChild(c.line); }); connections=[];
   workspace.querySelectorAll('.block').forEach(b=>b.remove());
   data.blocks.forEach(bdata=>{
-    const b = createBlockInstance(bdata.type);
-    b.dataset.id = bdata.id || `b${_blockIdCounter++}`;
-    Object.keys(bdata.dataset||{}).forEach(k=>b.dataset[k]=bdata.dataset[k]);
-    b.style.position='absolute'; b.style.left=bdata.left; b.style.top=bdata.top; b.classList.add('instance');
-    workspace.appendChild(b); makeMovable(b);
+    if (bdata.type === 'node'){
+      // create a wire-node at the stored position
+      const node = createWireNode(bdata.left || '0px', bdata.top || '0px');
+      node.dataset.blockId = bdata.id || `node${_wireNodeCounter++}`;
+      // make node draggable already handled in createWireNode
+    } else {
+      const b = createBlockInstance(bdata.type);
+      b.dataset.id = bdata.id || `b${_blockIdCounter++}`;
+      Object.keys(bdata.dataset||{}).forEach(k=>b.dataset[k]=bdata.dataset[k]);
+      b.style.position='absolute'; b.style.left=bdata.left; b.style.top=bdata.top; b.classList.add('instance');
+      workspace.appendChild(b); makeMovable(b);
+    }
   });
   data.conns.forEach(c=>{
-    // Try to resolve both blocks referenced by the connection. If missing, record and warn after.
-    const allBlocks = Array.from(workspace.querySelectorAll('.block'));
+    // Try to resolve both connection endpoints: can be blocks or wire-nodes
+    const allConnectors = Array.from(workspace.querySelectorAll('.block, .wire-node'));
     // primary match by dataset.id, fallback to element id if present
-    const b1 = allBlocks.find(x => x.dataset.id === c.conn1BlockId || x.id === c.conn1BlockId);
-    const b2 = allBlocks.find(x => x.dataset.id === c.conn2BlockId || x.id === c.conn2BlockId);
+    const b1 = allConnectors.find(x => x.dataset.id === c.conn1BlockId || x.dataset.blockId === c.conn1BlockId || x.id === c.conn1BlockId);
+    const b2 = allConnectors.find(x => x.dataset.id === c.conn2BlockId || x.dataset.blockId === c.conn2BlockId || x.id === c.conn2BlockId);
     if (!b1 || !b2) {
       // record missing connection entries for later reporting (do not throw)
       if (!importCircuit._missingConns) importCircuit._missingConns = [];
       importCircuit._missingConns.push({ requested: c, found1: !!b1, found2: !!b2 });
       return;
     }
-    const conn1 = b1.querySelector(`.input.${c.conn1Terminal}`);
-    const conn2 = b2.querySelector(`.input.${c.conn2Terminal}`);
+    // connectors may be .input children (blocks) or the node element itself
+    const conn1 = b1.classList && b1.classList.contains('wire-node') ? b1 : b1.querySelector(`.input.${c.conn1Terminal}`);
+    const conn2 = b2.classList && b2.classList.contains('wire-node') ? b2 : b2.querySelector(`.input.${c.conn2Terminal}`);
     if (conn1 && conn2) createWire(conn1, conn2);
   });
   // Report any connection entries that referenced non-existent blocks so users can fix JSON
@@ -753,8 +812,9 @@ function createWire(conn1, conn2) {
   if (conn1 === conn2) return;
   const b1 = conn1.closest('.block');
   const b2 = conn2.closest('.block');
-  if (!b1 || !b2) return; // must be inside a block
-  if (b1 === b2) return; // don't wire within same block
+  // allow wiring to "wire-node" connectors which are not inside .block elements
+  // if both connectors are inside the same block, avoid wiring intra-block
+  if (b1 && b2 && b1 === b2) return;
 
   // Prevent duplicates: check existing connections
   for (const c of connections) {
@@ -897,7 +957,13 @@ function evaluateCircuit() {
     const na = netFor(left); const nb = netFor(right);
     if (b.dataset.type === 'resistor') resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
     else if (b.dataset.type === 'battery') vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
-    else if (b.dataset.type === 'led') diodes.push({ n1: nb, n2: na, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
+    else if (b.dataset.type === 'led') {
+      // determine LED anode/cathode by classes (anode/cathode) so visual rotation keeps electrical meaning
+      const anodeEl = b.querySelector('.input.anode') || b.querySelector('.input.right') || b.querySelector('.input.left');
+      const cathodeEl = b.querySelector('.input.cathode') || b.querySelector('.input.left') || b.querySelector('.input.right');
+      const an = netFor(anodeEl); const ca = netFor(cathodeEl);
+      diodes.push({ n1: an, n2: ca, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
+    }
   });
 
   if (CT_DEBUG) {
@@ -1088,7 +1154,13 @@ function buildCircuitModel(){
     const na = netFor(left); const nb = netFor(right);
     if (b.dataset.type === 'resistor') resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
     else if (b.dataset.type === 'battery') vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
-    else if (b.dataset.type === 'led') diodes.push({ n1: nb, n2: na, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
+    else if (b.dataset.type === 'led') {
+      // prefer explicit anode/cathode classes so orientation is stable across rotations
+      const anodeEl = b.querySelector('.input.anode') || b.querySelector('.input.right') || b.querySelector('.input.left');
+      const cathodeEl = b.querySelector('.input.cathode') || b.querySelector('.input.left') || b.querySelector('.input.right');
+      const an = netFor(anodeEl); const ca = netFor(cathodeEl);
+      diodes.push({ n1: an, n2: ca, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
+    }
   });
 
   return { connectorList, cIndex, netMap, netFor, resistors, vSources, diodes };
@@ -1140,8 +1212,28 @@ function applyBasicResults(results){
 function runBasicOnce(){
   const model = buildCircuitModel();
   if (!model || !model.netMap || model.netMap.size === 0) { updateSimBanner('Basic sim: no nets detected (check wiring or import).','error',true); setTimeout(()=>clearSimBanner(),3000); return; }
+  if (CT_DEBUG) {
+    try { console.debug('CT: Basic sim model', { nets: model.netMap.size, resistors: model.resistors.length, batteries: model.vSources.length, diodes: model.diodes.length }); } catch(e){}
+  }
+  // Detailed debug: list connectors and their net ids, and component net assignments
+  if (CT_DEBUG) {
+    try {
+      console.debug('CT: connectors mapping:');
+      model.connectorList.forEach((c, i) => {
+        const bid = c.dataset.blockId || c.closest('.block')?.dataset?.id || '(no-block)';
+        const term = c.dataset.terminal || '(no-term)';
+        const net = model.netFor(c);
+        console.debug(`CT: connector[${i}] block=${bid} term=${term} net=${net}`);
+      });
+      console.debug('CT: components:');
+      model.resistors.forEach((r, i) => console.debug(`resistor[${i}] n1=${r.n1} n2=${r.n2} R=${r.R} block=${r.block?.dataset?.id}`));
+      model.vSources.forEach((v, i) => console.debug(`battery[${i}] nPlus=${v.nPlus} nMinus=${v.nMinus} V=${v.V} block=${v.block?.dataset?.id}`));
+      model.diodes.forEach((d, i) => console.debug(`led[${i}] n1=${d.n1} n2=${d.n2} Vf=${d.Vf} block=${d.block?.dataset?.id}`));
+    } catch(e) { console.debug('CT: connector/component debug failed', e); }
+  }
   if (!window.SimpleSolver || !window.SimpleSolver.simulate) { updateSimBanner('Basic sim backend not loaded.', 'error', true); setTimeout(()=>clearSimBanner(),2000); return; }
   const res = window.SimpleSolver.simulate(model);
+  if (CT_DEBUG) try { console.debug('CT: Basic sim result', res); } catch(e){}
   if (res && res.success) { applyBasicResults(res); } else { updateSimBanner('Basic sim failed to produce results.', 'error', true); setTimeout(()=>clearSimBanner(),2000); }
   return res;
 }
