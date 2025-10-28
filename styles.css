@@ -52,13 +52,90 @@
 #workspace { width: 820px; height: 820px; max-width: 90vmin; max-height: 90vmin; background: #fff; border: 2px solid #111827; border-radius: 10px; position: relative; overflow: hidden; box-shadow: 0 12px 24px rgba(0,0,0,0.08); }
 
 /* Blocks */
-.block { user-select: none; -webkit-user-drag: none; cursor: grab; padding: 10px 12px; border-radius: 8px; border: 1px solid #d1d5db; background: #e5e7eb; color: #111827; font-size: 14px; line-height: 1; width: max-content; max-width: 160px; }
+.block { 
+  user-select: none; 
+  -webkit-user-drag: none; 
+  cursor: grab; 
+  padding: 4px; 
+  border-radius: 8px; 
+  border: 1px solid #d1d5db; 
+  background: #ffffff;
+  color: #111827; 
+  font-size: 13px;
+  min-width: 60px;
+  min-height: 50px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
 .block:active { cursor: grabbing; }
 
+/* Common block layout */
+.block .component-label {
+  font-weight: 500;
+  text-align: center;
+  margin-bottom: 2px;
+}
+
+.block .component-image {
+  width: 40px;
+  height: 40px;
+  background-size: contain;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+
+/* Switch specific styling */
+.block[data-type="switch"] {
+  min-height: 40px;
+  padding: 2px 8px;
+}
+.block[data-type="switch"] .component-image {
+  width: 24px;
+  height: 2px;
+  background: currentColor;
+  margin: 4px 0;
+  opacity: 0.3;
+}
+.block[data-type="switch"].on .component-image {
+  opacity: 1;
+}
+
 /* Palette block styles by type */
-.block.palette[data-type="led"] { background: #fee2e2; border-color: #fca5a5; }
-.block.palette[data-type="resistor"] { background: #dbeafe; border-color: #93c5fd; }
-.block.palette[data-type="battery"] { background: #dcfce7; border-color: #86efac; }
+.block.palette[data-type="led"] { background: #fff; border-color: #fca5a5; }
+.block.palette[data-type="resistor"] { background: #fff; border-color: #93c5fd; }
+.block.palette[data-type="battery"] { background: #fff; border-color: #86efac; }
+.block.palette[data-type="switch"] { background: #fff; border-color: #d1d5db; }
+
+/* Component images */
+.block[data-type="led"] .component-image { background-image: url('images/components/led.png'); }
+.block[data-type="resistor"] .component-image { background-image: url('images/components/resistor.png'); }
+.block[data-type="battery"] .component-image { background-image: url('images/components/battery.png'); }
+
+/* Fallback background colors when images not available */
+.block[data-type="led"] .component-image:empty { background-color: #fee2e2; }
+.block[data-type="resistor"] .component-image:empty { background-color: #dbeafe; }
+.block[data-type="battery"] .component-image:empty { background-color: #dcfce7; }
+
+/* Switch appearance and states */
+.block[data-type="switch"] {
+  min-width: 60px;
+  position: relative;
+}
+.block[data-type="switch"]::before {
+  content: '';
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 50%;
+  height: 2px;
+  background: #374151;
+  transform: translateY(-50%);
+}
+.block[data-type="switch"][data-state="off"]::before {
+  background: #d1d5db;
+}
 
 /* Instances inside workspace */
 #workspace .block.instance { position: absolute; }
@@ -156,8 +233,7 @@
 .input.right { right: -6px; }
 
 /* polarity markers */
-.input.anode { box-shadow: 0 0 0 2px rgba(239,68,68,0.12) inset; background: #ef4444; }
-.input.cathode { box-shadow: 0 0 0 2px rgba(59,130,246,0.12) inset; background: #3b82f6; }
+.input.anode, .input.cathode { box-shadow: 0 0 0 2px rgba(0,0,0,0.1) inset; background: #374151; }
 
 .input.selected {
   background: #3b82f6;
@@ -201,11 +277,11 @@
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  min-height: 420px; /* larger panel for more room */
+  min-height: 320px; /* more compact panel */
 }
-#properties h3 { margin: 0 0 12px; font-size: 18px }
-#prop-content { font-size: 14px; min-height: 220px; flex: 1 1 auto; overflow: auto; }
-.prop-actions { margin-top: 12px; display:flex; gap:6px; align-items:center; justify-content:flex-end; margin-bottom:4px }
+#properties h3 { margin: 0 0 8px; font-size: 16px }
+#prop-content { font-size: 14px; min-height: 120px; flex: 1 1 auto; overflow: auto; }
+.prop-actions { margin-top: auto; padding-top: 8px; display:flex; gap:4px; align-items:center; justify-content:flex-end; }
 .prop-actions button, .prop-actions input[type="file"] { font-size: 13px; padding: 8px 10px; border-radius: 6px }
 .prop-actions input[type="file"] { display: none }
 
@@ -437,6 +513,9 @@ body.dark #hover-blurb.led {
 
 /* workspace tweak */
 #workspace { box-shadow: 0 16px 36px rgba(2,6,23,0.06); }
+
+/* Level panel tweaks */
+#level-desc { margin-top: 0; }
 
 /* Prevent text selection while moving */
 .ct-moving { user-select: none; -webkit-user-select: none; }

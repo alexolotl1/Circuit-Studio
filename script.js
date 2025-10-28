@@ -99,6 +99,10 @@ const partBlurbs = {
   led: {
     title: 'LED',
     desc: 'Light Emitting Diode: lights up when forward biased. Needs a resistor to limit current.'
+  },
+  switch: {
+    title: 'Switch',
+    desc: 'Controls current flow by making or breaking the circuit. Click to toggle on/off during or before simulation.'
   }
 };
 
@@ -385,7 +389,23 @@ function createBlockInstance(type) {
   // assign stable id for future reference
   block.dataset.id = `b${_blockIdCounter++}`;
   block.dataset.type = type;
-  block.textContent = type.toUpperCase();
+
+  // Create component label
+  const label = document.createElement("div");
+  label.className = "component-label";
+  label.textContent = type.toUpperCase();
+  block.appendChild(label);
+
+  // Create component image/indicator container
+  const imageContainer = document.createElement("div");
+  imageContainer.className = "component-image";
+  
+  // For switch, we use a simple line indicator
+  if (type === 'switch') {
+    block.dataset.state = 'off';
+  }
+  
+  block.appendChild(imageContainer);
 
   // style based on palette version
   // visual styling is handled by CSS classes (palette and instance rules)
@@ -418,6 +438,17 @@ function createBlockInstance(type) {
   } else if (type === 'led') {
     block.dataset.forwardVoltage = 2; // volts (approx)
     block.dataset.powered = 'false';
+  } else if (type === 'switch') {
+    block.dataset.state = 'on';
+    // Add click handler for switch toggling
+    block.addEventListener('click', e => {
+      if (e.target === block) {  // Only toggle if clicking the block itself, not connectors
+        block.dataset.state = block.dataset.state === 'on' ? 'off' : 'on';
+        if (isBasicSimRunning || isSimRunning) {
+          evaluateCircuit();  // Re-run simulation when switch changes
+        }
+      }
+    });
   }
 
   // tooltip handlers (show measurements)
@@ -1129,9 +1160,15 @@ function buildCircuitModel(){
     const right = b.querySelector('.input.right');
     if (!left || !right) return;
     const na = netFor(left); const nb = netFor(right);
-    if (b.dataset.type === 'resistor') resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
-    else if (b.dataset.type === 'battery') vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
-    else if (b.dataset.type === 'led') {
+    if (b.dataset.type === 'resistor') {
+      resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
+    } else if (b.dataset.type === 'battery') {
+      vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
+    } else if (b.dataset.type === 'switch') {
+      // Switches are modeled as resistors: very low R when on, very high when off
+      const isOn = b.dataset.state !== 'off';
+      resistors.push({ n1: na, n2: nb, R: isOn ? 1e-6 : 1e12, block: b });
+    } else if (b.dataset.type === 'led') {
       // prefer explicit anode/cathode classes so orientation is stable across rotations
       const anodeEl = b.querySelector('.input.anode') || b.querySelector('.input.right') || b.querySelector('.input.left');
       const cathodeEl = b.querySelector('.input.cathode') || b.querySelector('.input.left') || b.querySelector('.input.right');
