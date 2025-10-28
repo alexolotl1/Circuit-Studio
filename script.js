@@ -60,33 +60,10 @@ function clearWorkspace(){
   blocks.forEach(b=>{ try{ b.remove(); }catch(e){} });
 }
 
-// Load a small canonical test circuit (battery -> resistor -> LED -> battery)
-function loadTestCircuit(){
-  if (isSimRunning){ updateSimBanner('Stop simulation before loading a test circuit.', 'error', true); return; }
-  clearWorkspace();
-  // create parts
-  const batt = createBlockInstance('battery'); const res = createBlockInstance('resistor'); const led = createBlockInstance('led');
-  // set nicer ids (optional)
-  batt.dataset.id = 'tbatt'; res.dataset.id = 'tres'; led.dataset.id = 'tled';
-  // set values
-  batt.dataset.voltage = 5; res.dataset.resistance = 100; led.dataset.forwardVoltage = 2; led.dataset.powered = 'false';
-  // position inside workspace
-  batt.style.position='absolute'; batt.style.left='120px'; batt.style.top='120px'; batt.classList.add('instance');
-  res.style.position='absolute'; res.style.left='260px'; res.style.top='240px'; res.classList.add('instance');
-  led.style.position='absolute'; led.style.left='380px'; led.style.top='120px'; led.classList.add('instance');
-  workspace.appendChild(batt); workspace.appendChild(res); workspace.appendChild(led);
-  makeMovable(batt); makeMovable(res); makeMovable(led);
-  // wire them in series: battery.RIGHT -> resistor.RIGHT, resistor.LEFT -> led.RIGHT, led.LEFT -> battery.LEFT
-  const battRight = batt.querySelector('.input.right'); const battLeft = batt.querySelector('.input.left');
-  const resRight = res.querySelector('.input.right'); const resLeft = res.querySelector('.input.left');
-  const ledRight = led.querySelector('.input.right'); const ledLeft = led.querySelector('.input.left');
-  // create wires
-  createWire(battRight, resRight);
-  createWire(resLeft, ledRight);
-  createWire(ledLeft, battLeft);
-  // evaluate once
-  try { evaluateCircuit(); } catch(e){ console.error(e); }
-}
+// The test-circuit loader was removed (did not behave reliably).
+// If you want to re-add a canonical demo, implement a small initializer
+// that uses createBlockInstance() and createWire() while respecting
+// current simulation state (and call evaluateCircuit()).
 
 function ensureSimBanner(){
   let el = document.getElementById('sim-banner');
@@ -1551,9 +1528,7 @@ function fallbackSimplePowering() {
       modal.querySelector('.overlay')?.addEventListener('click', closeAnswerModal);
       modal.querySelector('.close')?.addEventListener('click', closeAnswerModal);
     }
-    // hook up test circuit button (workspace overlay)
-    const testBtn = document.getElementById('sim-test');
-    if (testBtn) testBtn.addEventListener('click', ()=>{ loadTestCircuit(); });
+  // The test circuit button was removed from the UI. (loadTestCircuit was removed.)
   });
 
 })();
