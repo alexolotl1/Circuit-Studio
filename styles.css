@@ -485,6 +485,15 @@ body.dark #hover-blurb.led {
 }
 
 /* Slight visual refresh for panels */
+/* Dark-mode light-gray overrides: replace pure white backgrounds with #f3f4f6 */
+body.dark .ct-context-menu { background: #f3f4f6; border-color: rgba(0,0,0,0.06); color: inherit; }
+body.dark .hover-blurb { background: #f3f4f6; border-color: rgba(0,0,0,0.06); color: inherit; box-shadow: 0 2px 8px rgba(0,0,0,0.18); }
+body.dark .hover-blurb .hb-icon { background: #f3f4f6; border-color: rgba(0,0,0,0.06); }
+body.dark .theme-toggle button { background: linear-gradient(90deg,#f3f4f6,#e9eef2); border:1px solid rgba(0,0,0,0.06); color: inherit; }
+body.dark .lesson-actions button { background: linear-gradient(90deg,#f3f4f6,#e9eef2); border:1px solid rgba(0,0,0,0.06); color: inherit; }
+body.dark #answer-modal .modal { background: #f3f4f6; color: inherit; }
+body.dark #sim-banner { background: rgba(243,244,246,0.95); border-color: rgba(0,0,0,0.06); color: inherit; }
+
 #properties { background: var(--panel-bg); border-left: 1px solid rgba(0,0,0,0.06); padding: 16px; border-radius: 10px; }
 .palette-list .block { font-size: 15px; padding: 12px 14px; }
 

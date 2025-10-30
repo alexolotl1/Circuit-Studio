@@ -436,8 +436,10 @@ function createBlockInstance(type) {
   } else if (type === 'resistor') {
     block.dataset.resistance = 100; // ohms
   } else if (type === 'led') {
-    block.dataset.forwardVoltage = 2; // volts (approx)
+    block.dataset.resistance = 100; // treat LED like a resistor that lights up
     block.dataset.powered = 'false';
+    block.dataset.current = '';
+    block.dataset.voltageDrop = '';
   } else if (type === 'switch') {
     block.dataset.state = 'on';
     // Add click handler for switch toggling
@@ -966,11 +968,8 @@ function evaluateCircuit() {
     if (b.dataset.type === 'resistor') resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
     else if (b.dataset.type === 'battery') vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
     else if (b.dataset.type === 'led') {
-      // determine LED anode/cathode by classes (anode/cathode) so visual rotation keeps electrical meaning
-      const anodeEl = b.querySelector('.input.anode') || b.querySelector('.input.right') || b.querySelector('.input.left');
-      const cathodeEl = b.querySelector('.input.cathode') || b.querySelector('.input.left') || b.querySelector('.input.right');
-      const an = netFor(anodeEl); const ca = netFor(cathodeEl);
-      diodes.push({ n1: an, n2: ca, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
+      // LEDs are now handled as resistors with meta.type='led' to simplify the circuit model
+      resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||100, block: b, meta: {type:'led'} });
     }
   });
 
@@ -1014,9 +1013,11 @@ function evaluateCircuit() {
   }
   const V = sol.V; const J = sol.J || [];
   if (sol.resistorResults) {
-    sol.resistorResults.forEach((rres, idx) => {
-      const meta = resistors[idx]; if (!meta || !meta.block) return;
-      meta.block.dataset.voltageDrop = String(Math.abs((rres.v1||0) - (rres.v2||0))); meta.block.dataset.current = String(Math.abs(rres.I||0));
+    sol.resistorResults.forEach(rres => {
+      const block = rres.meta && rres.meta.block;
+      if (!block) return;
+      block.dataset.voltageDrop = String(Math.abs(rres.Vdrop || 0));
+      block.dataset.current = String(Math.abs(rres.I || 0));
     });
   }
   if (sol.diodeResults) {
@@ -1163,17 +1164,15 @@ function buildCircuitModel(){
     if (b.dataset.type === 'resistor') {
       resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
     } else if (b.dataset.type === 'battery') {
+      // Battery positive terminal is on the right
       vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
     } else if (b.dataset.type === 'switch') {
       // Switches are modeled as resistors: very low R when on, very high when off
       const isOn = b.dataset.state !== 'off';
       resistors.push({ n1: na, n2: nb, R: isOn ? 1e-6 : 1e12, block: b });
     } else if (b.dataset.type === 'led') {
-      // prefer explicit anode/cathode classes so orientation is stable across rotations
-      const anodeEl = b.querySelector('.input.anode') || b.querySelector('.input.right') || b.querySelector('.input.left');
-      const cathodeEl = b.querySelector('.input.cathode') || b.querySelector('.input.left') || b.querySelector('.input.right');
-      const an = netFor(anodeEl); const ca = netFor(cathodeEl);
-      diodes.push({ n1: an, n2: ca, Vf: Number(b.dataset.forwardVoltage)||2, Is: 1e-12, nVt: 0.026, block: b });
+      // LEDs behave like resistors that light up when current flows (no polarity)
+      resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||100, block: b, meta: {type:'led'} });
     }
   });
 
@@ -1185,21 +1184,27 @@ let isBasicSimRunning = false;
 let basicSimInterval = null;
 
 function applyBasicResults(results){
-  // results: { resistorResults:[{idx,I,v1,v2}], diodeResults:[{idx,I,Vd,forward}] }
+  // results: { resistorResults:[{idx,I,Vdrop}] } - LEDs are in resistorResults with meta.type=='led'
   try {
     if (results.resistorResults) results.resistorResults.forEach(rr => {
       const meta = rr.meta; if (!meta || !meta.block) return;
-      meta.block.dataset.current = String(Math.abs(rr.I||0));
-      meta.block.dataset.voltageDrop = String(Math.abs(rr.Vdrop||0));
-    });
-    if (results.diodeResults) results.diodeResults.forEach(dr => {
-      const meta = dr.meta; if (!meta || !meta.block) return;
-      const I = Math.abs(dr.I||0); const Vd = dr.Vd || 0;
+      const I = Math.abs(rr.I||0);
+      const V = Math.abs(rr.Vdrop||0);
       meta.block.dataset.current = String(I);
-      meta.block.dataset.voltageDrop = String(Vd);
-      if (dr.forward && I > 1e-6) { meta.block.dataset.powered = 'true'; meta.block.classList.add('powered'); }
-      else { meta.block.dataset.powered = 'false'; meta.block.classList.remove('powered'); }
-      try { const maxVisualI = 0.02; const intensity = Math.min(1, I / maxVisualI); meta.block.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
+      meta.block.dataset.voltageDrop = String(V);
+      
+      // If this is an LED, light it up based on current
+      if (meta.type === 'led') {
+        const isLit = I > 1e-6; // LED lights up with any significant current
+        meta.block.dataset.powered = String(isLit);
+        meta.block.classList[isLit ? 'add' : 'remove']('powered');
+        if (isLit) {
+          // Visual intensity uses a max reference current
+          const maxVisualI = 0.02;
+          const intensity = Math.min(1, I / maxVisualI);
+          meta.block.style.setProperty('--led-intensity', String(intensity));
+        }
+      }
     });
     // Additional pass: ensure any LED that has a measurable current or sufficient V is marked powered
     try {
