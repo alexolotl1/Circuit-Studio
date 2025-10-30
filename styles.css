@@ -47,10 +47,11 @@
 
 .main-area { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
 .workspace-wrap { display: flex; align-items: stretch; justify-content: center; width: 100%; gap: 16px; }
+.workspace-wrap.dark { display: flex; align-items: stretch; justify-content: center; width: 100%; gap: 16px; color: #083183;}
 
 /* White workspace square */
-#workspace { width: 820px; height: 820px; max-width: 90vmin; max-height: 90vmin; background: #fff; border: 2px solid #111827; border-radius: 10px; position: relative; overflow: hidden; box-shadow: 0 12px 24px rgba(0,0,0,0.08); }
-
+#workspace { width: 820px; height: 820px; max-width: 90vmin; max-height: 90vmin; background: #f8f8f8; border: 2px solid #111827; border-radius: 10px; position: relative; overflow: hidden; box-shadow: 0 12px 24px rgba(0,0,0,0.08); }
+#workspace.dark { width: 820px; height: 820px; max-width: 90vmin; max-height: 90vmin; background: #aeaeae; border: 2px solid #111827; border-radius: 10px; position: relative; overflow: hidden; box-shadow: 0 12px 24px rgba(0,0,0,0.08); }
 /* Blocks */
 .block { 
   user-select: none; 
@@ -103,10 +104,10 @@
 }
 
 /* Palette block styles by type */
-.block.palette[data-type="led"] { background: #fff; border-color: #fca5a5; }
-.block.palette[data-type="resistor"] { background: #fff; border-color: #93c5fd; }
-.block.palette[data-type="battery"] { background: #fff; border-color: #86efac; }
-.block.palette[data-type="switch"] { background: #fff; border-color: #d1d5db; }
+.block.palette[data-type="led"] { background: #fee2e2; border-color: #fca5a5; }
+.block.palette[data-type="resistor"] { background: #dbeafe; border-color: #93c5fd; }
+.block.palette[data-type="battery"] { background: #dcfce7; border-color: #86efac; }
+.block.palette[data-type="switch"] { background: #cbd1d9; border-color: #d1d5db; }
 
 /* Component images */
 .block[data-type="led"] .component-image { background-image: url('images/components/led.png'); }
@@ -548,3 +549,14 @@ body.dark #sim-banner { background: rgba(243,244,246,0.95); border-color: rgba(0
 /* While simulation is running, subtly dim the palette to discourage edits */
 .sim-running #palette { opacity: 0.6; pointer-events: none; }
 .sim-running #properties { opacity: 0.9; pointer-events: none; }
+/* Light mode (default) */
+#workspace {
+  background-color: #ffffff; /* white */
+  border-color: #111827;
+}
+
+/* Dark mode */
+body.dark #workspace {
+  background: linear-gradient(180deg, white, #9a9c9d);
+  border-color: rgba(0,0,0,0.12);
+}
