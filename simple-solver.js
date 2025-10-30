@@ -60,11 +60,90 @@ window.SimpleSolver = (function() {
       if (!model) return { success: false, reason: 'no-model' };
       const { netMap, resistors, vSources } = model; // LEDs are represented in resistors with meta.type='led'
 
+      // First pass: identify logic gate inputs and their voltage states
+      const logicStates = new Map(); // Maps net number to voltage state
+      const gateOutputs = new Map(); // Maps gate block to output net
+
+      // Helper: can this net reach any battery positive terminal (ignoring R)
+      function reachableToVPlus(startNet) {
+        if (startNet == null) return false;
+        const q = [startNet];
+        const seen = new Set([startNet]);
+        while (q.length) {
+          const cur = q.shift();
+          // direct battery plus
+          if (vSources.some(vs => vs.nPlus === cur)) return true;
+          // traverse any resistor edge
+          for (const r of resistors) {
+            if (r == null) continue;
+            if (r.n1 === cur && r.n2 != null && !seen.has(r.n2)) { seen.add(r.n2); q.push(r.n2); }
+            if (r.n2 === cur && r.n1 != null && !seen.has(r.n1)) { seen.add(r.n1); q.push(r.n1); }
+          }
+        }
+        return false;
+      }
+
+      // Helper to check if a net is powered
+      function isNetPowered(net) {
+        if (net == null) return false;
+        // Direct connection to voltage source
+        if (vSources.some(vs => vs.nPlus === net)) return true;
+        // Or reachable via component connectivity to a battery plus
+        return reachableToVPlus(net);
+      }
+
+      // Process logic gates first. Logic gates are represented as special resistor-like
+      // entries (script.js places gate data in resistor.meta.type === 'and'/'or').
+      const logicGates = resistors.filter(r => r && r.meta && (r.meta.type === 'and' || r.meta.type === 'or'));
+      logicGates.forEach(gate => {
+        if (!gate) return;
+        const block = gate.block || (gate.meta && gate.meta.block);
+        if (!block) return;
+        const type = block.dataset.type;
+
+        // input nets are stored on the resistor entry's n1/n2 (script.js uses that convention)
+        const input1Net = gate.n1;
+        const input2Net = gate.n2;
+        // outputNet may be present either at top-level (gate.outputNet) or under meta
+        const outputNet = gate.outputNet != null ? gate.outputNet : (gate.meta && gate.meta.outputNet != null ? gate.meta.outputNet : null);
+
+        const input1Powered = isNetPowered(input1Net);
+        const input2Powered = isNetPowered(input2Net);
+
+        if (input1Net != null) logicStates.set(input1Net, input1Powered);
+        if (input2Net != null) logicStates.set(input2Net, input2Powered);
+
+        let outputPowered = false;
+        if (type === 'and') outputPowered = input1Powered && input2Powered;
+        else if (type === 'or') outputPowered = input1Powered || input2Powered;
+
+        // If output is powered, add a low-resistance tie from the gate output net to an existing
+        // battery positive net so the rest of the solver sees a resistive path (avoids path-skipping).
+        if (outputPowered && outputNet != null) {
+          // pick a battery plus net if available
+          let plusNet = null;
+          if (vSources && vSources.length) {
+            for (const vs of vSources) { if (vs && vs.nPlus != null) { plusNet = vs.nPlus; break; } }
+          }
+          // fallback: choose any other net from netMap (not ideal, but ensures connectivity)
+          if (plusNet == null && netMap && netMap.size) {
+            for (const k of netMap.keys()) { if (k !== outputNet) { plusNet = k; break; } }
+          }
+          if (plusNet != null) {
+            // add a tiny resistor connecting output to plusNet so it behaves like a driven high
+            resistors.push({ n1: outputNet, n2: plusNet, R: 1e-3, meta: { type: 'logic-drive', block } });
+          }
+        }
+        // Also update visual dataset on block if available (best-effort)
+        try { block.dataset.outputPowered = outputPowered ? 'true' : 'false'; block.classList[outputPowered ? 'add' : 'remove']('powered'); } catch (e) {}
+      });
+
       if (window.CT_DEBUG) {
         console.debug('SimpleSolver: Input model:', {
           nets: netMap ? netMap.size : 0,
           resistors: resistors ? resistors.map(r => ({ n1: r.n1, n2: r.n2, R: r.R, type: r.meta?.type || 'resistor' })) : [],
-          vSources: vSources ? vSources.map(v => ({ plus: v.nPlus, minus: v.nMinus, V: v.V })) : []
+          vSources: vSources ? vSources.map(v => ({ plus: v.nPlus, minus: v.nMinus, V: v.V })) : [],
+          logicStates: Array.from(logicStates.entries())
         });
       }
 
@@ -110,9 +189,20 @@ window.SimpleSolver = (function() {
             edgeList.push(validMatches.length ? validMatches : null);
           }
 
-          if (edgeList.some(seg => seg == null)) {
-            if (window && window.CT_DEBUG) console.debug('SimpleSolver: skipping path because it contains open segments', { nets: p.nets, edgeList });
-            return;
+          // If a segment has no matches (only wires/sources), synthesize a tiny resistor
+          // so the solver can still compute a current for logic-driven paths.
+          const SYNTH_R = 1e-3; // 1 milliohm tie
+          for (let si = 0; si < edgeList.length; si++) {
+            if (edgeList[si] == null) {
+              // create a synthetic resistor meta connecting the two nets in this segment
+              const a = p.nets[si];
+              const b = p.nets[si+1];
+              const fakeMeta = { type: 'resistor', idx: -1, meta: { n1: a, n2: b, R: SYNTH_R } };
+              edgeList[si] = [ fakeMeta ];
+              if (window && window.CT_DEBUG) {
+                try { console.debug('SimpleSolver: inserted synthetic resistor for open segment', { a, b, SYNTH_R }); } catch(e){}
+              }
+            }
           }
 
           let Rsum = 0;

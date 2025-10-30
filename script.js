@@ -104,6 +104,15 @@ const partBlurbs = {
     title: 'Switch',
     desc: 'Controls current flow by making or breaking the circuit. Click to toggle on/off during or before simulation.'
   }
+  ,
+  and: {
+    title: 'AND Gate',
+    desc: 'Two-input logic gate. Output is ON only when both inputs are powered.'
+  },
+  or: {
+    title: 'OR Gate',
+    desc: 'Two-input logic gate. Output is ON when either input is powered.'
+  }
 };
 
 // SVG icons per part type
@@ -111,6 +120,9 @@ const svgMap = {
   battery: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="6" width="16" height="12" rx="2" fill="#34d399" opacity="0.14"/><rect x="4" y="8" width="12" height="8" rx="1" fill="#34d399"/><rect x="18" y="10" width="2" height="4" rx="0.5" fill="#34d399"/></svg>',
   resistor: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="6" width="20" height="12" rx="2" fill="#60a5fa" opacity="0.12"/><path d="M3 12h3l2-4 3 8 2-4h3" stroke="#2563eb" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   led: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="9" r="3" fill="#f59e0b"/><path d="M12 12v6" stroke="#f59e0b" stroke-width="1.6" stroke-linecap="round"/><path d="M7 4l1.5 1.5M16.5 4L15 5.5" stroke="#f59e0b" stroke-width="1.2" stroke-linecap="round"/></svg>'
+  ,
+  and: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="4" width="20" height="16" rx="3" fill="#e6f4ff" opacity="0.12"/><path d="M6 8h6a4 4 0 010 8H6v-8z" stroke="#0369a1" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="#7dd3fc"/></svg>',
+  or: '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="2" y="4" width="20" height="16" rx="3" fill="#fffbeb" opacity="0.12"/><path d="M6 8s4 2 6 6c2-4 6-6 6-6" stroke="#92400e" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" fill="#fcd34d"/></svg>'
 };
 
 function updateHoverBlurb(type, event) {
@@ -418,17 +430,32 @@ function createBlockInstance(type) {
   leftInput.classList.add('cathode');
   rightInput.classList.add('anode');
 
+  // For logic gates we create a dedicated output connector in addition to left/right inputs
+  let outputInput = null;
+  if (type === 'and' || type === 'or') {
+    outputInput = document.createElement('div');
+    outputInput.className = 'input output';
+    // visually mark output as an anode-style connector
+    outputInput.classList.add('anode');
+  }
+
   block.appendChild(leftInput);
   block.appendChild(rightInput);
+  if (outputInput) block.appendChild(outputInput);
 
   // tag connectors so we can reference them in graph algorithms
   leftInput.dataset.blockId = block.dataset.id;
   leftInput.dataset.terminal = 'left';
   rightInput.dataset.blockId = block.dataset.id;
   rightInput.dataset.terminal = 'right';
+  if (outputInput) {
+    outputInput.dataset.blockId = block.dataset.id;
+    outputInput.dataset.terminal = 'out';
+  }
 
   leftInput.addEventListener("click", e => handleConnectorClick(e, leftInput));
   rightInput.addEventListener("click", e => handleConnectorClick(e, rightInput));
+  if (outputInput) outputInput.addEventListener('click', e => handleConnectorClick(e, outputInput));
 
   // component default properties for simulation
   if (type === 'battery') {
@@ -450,6 +477,13 @@ function createBlockInstance(type) {
         try { evaluateCircuit(true); } catch (err) { /* non-fatal */ }
       }
     });
+  }
+
+  // Initialize gate datasets
+  if (type === 'and' || type === 'or') {
+    block.dataset.input1Powered = 'false';
+    block.dataset.input2Powered = 'false';
+    block.dataset.outputPowered = 'false';
   }
 
   // tooltip handlers (show measurements)
@@ -968,6 +1002,21 @@ function evaluateCircuit(force = false) {
     
     connectedTo.get(id1).add(id2);
     connectedTo.get(id2).add(id1);
+
+    // Special handling for logic gate connections
+    const gateBlock1 = c.conn1.closest('.block');
+    const gateBlock2 = c.conn2.closest('.block');
+    if (gateBlock1 && gateBlock2) {
+      // If connecting to a logic gate output, mark the connection
+      if ((gateBlock1.dataset.type === 'and' || gateBlock1.dataset.type === 'or') && 
+          c.conn1.classList.contains('output')) {
+        c.isLogicOutput = true;
+      }
+      if ((gateBlock2.dataset.type === 'and' || gateBlock2.dataset.type === 'or') && 
+          c.conn2.classList.contains('output')) {
+        c.isLogicOutput = true;
+      }
+    }
   });
 
   // Second pass: Build electrical nets with union-find
@@ -1196,6 +1245,25 @@ function evaluateCircuit(force = false) {
         resistors.push({ n1: na, n2: nb, R: 1e-3, block: b, meta: {type: 'switch'} });
       }
     }
+    // Logic gates: check inputs and set output dataset flags (we treat left/right as inputs, output as 'out')
+    if (b.dataset.type === 'and' || b.dataset.type === 'or') {
+      const inA = b.querySelector('.input.left');
+      const inB = b.querySelector('.input.right');
+      const out = b.querySelector('.input.output') || b.querySelector('.input.out');
+  if (!inA || !inB || !out) return;
+      const na = netFor(inA); const nb = netFor(inB);
+      let aPowered = false; let bPowered = false;
+      try { for (const vs of vSources) { if (vs && (vs.nPlus === na || vs.nMinus === na)) { aPowered = true; break; } } } catch(e){}
+      try { for (const vs of vSources) { if (vs && (vs.nPlus === nb || vs.nMinus === nb)) { bPowered = true; break; } } } catch(e){}
+      b.dataset.input1Powered = aPowered ? 'true' : 'false';
+      b.dataset.input2Powered = bPowered ? 'true' : 'false';
+      let outVal = false;
+      if (b.dataset.type === 'and') outVal = (aPowered && bPowered);
+      else outVal = (aPowered || bPowered);
+      b.dataset.outputPowered = outVal ? 'true' : 'false';
+      // Visual flag for CSS
+      b.dataset.outputPowered = outVal ? 'true' : 'false';
+    }
   });
 
   if (CT_DEBUG) {
@@ -1261,7 +1329,7 @@ function evaluateCircuit(force = false) {
   if (CT_DEBUG) console.debug('CT: remap nets', { usedList, remap: Object.fromEntries(remap) });
 
   // Create remapped shallow copies for solver (don't mutate DOM-backed objects)
-  const remappedResistors = resistors.map(r => ({ ...r, n1: r.n1==null?null:remap.get(r.n1), n2: r.n2==null?null:remap.get(r.n2) }));
+  const remappedResistors = resistors.map(r => ({ ...r, n1: r.n1==null?null:remap.get(r.n1), n2: r.n2==null?null:remap.get(r.n2), outputNet: r.outputNet==null?null:(remap.has(r.outputNet)?remap.get(r.outputNet):r.outputNet) }));
   const remappedVSources = vSources.map(v => ({ ...v, nPlus: v.nPlus==null?null:remap.get(v.nPlus), nMinus: v.nMinus==null?null:remap.get(v.nMinus) }));
   const remappedDiodes = diodes.map(d => ({ ...d, n1: d.n1==null?null:remap.get(d.n1), n2: d.n2==null?null:remap.get(d.n2) }));
 
@@ -1483,12 +1551,147 @@ function buildCircuitModel(){
     } else if (b.dataset.type === 'led') {
       // LEDs behave like resistors that light up when current flows (no polarity)
       resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||100, block: b, meta: {type:'led'} });
+    } else if (b.dataset.type === 'and' || b.dataset.type === 'or') {
+      // Add logic gate to the model with its input and output nets
+      const inA = b.querySelector('.input.left');
+      const inB = b.querySelector('.input.right');
+      const out = b.querySelector('.input.output') || b.querySelector('.input.out');
+      if (inA && inB && out) {
+        const na2 = netFor(inA);
+        const nb2 = netFor(inB);
+        const nout = netFor(out);
+        
+        // Add logic gate as special resistor type that carries the input/output information
+        resistors.push({
+          n1: na2,
+          n2: nb2,
+          outputNet: nout,
+          R: 1e6, // High impedance for inputs
+          block: b,
+          meta: {
+            type: b.dataset.type,
+            block: b,
+            inputA: inA,
+            inputB: inB,
+            output: out
+          }
+        });
+
+        // SIMPLE LOGIC: if inputs are directly tied to any battery + net, drive the output
+        try {
+
+  // SIMPLE LOGIC HEURISTIC: If a gate's inputs can reach any battery positive net,
+  // consider that input powered. If gate output should be HIGH, add a tiny resistor
+  // from the gate output net to a battery plus net so the SimpleSolver sees a resistive path.
+  try {
+    const batteryPlusNets = vSources.map(v => v.nPlus).filter(x => x != null);
+    // build net adjacency from current resistors (so reachability ignores logic-drive we may add)
+    const netAdj = new Map();
+    function addNetEdge(a,b){ if (a==null||b==null) return; if(!netAdj.has(a)) netAdj.set(a, new Set()); if(!netAdj.has(b)) netAdj.set(b, new Set()); netAdj.get(a).add(b); netAdj.get(b).add(a); }
+    resistors.forEach(r => { try { addNetEdge(r.n1, r.n2); } catch(e){} });
+
+    function netReachableToAny(startNet, targets){
+      if (startNet == null) return false;
+      const q = [startNet]; const seen = new Set([startNet]);
+      while(q.length){ const cur = q.shift(); if (targets.includes(cur)) return true; const nbrs = Array.from(netAdj.get(cur) || []); for (const n of nbrs){ if (!seen.has(n)){ seen.add(n); q.push(n); } } }
+      return false;
+    }
+
+    // Find gate entries among resistors (we stored them with meta.type === 'and'/'or')
+    const gateEntries = resistors.filter(r=> r && r.meta && (r.meta.type === 'and' || r.meta.type === 'or'));
+    gateEntries.forEach(g => {
+      try {
+        const block = g.block || (g.meta && g.meta.block);
+        if (!block) return;
+        const inA = g.n1; const inB = g.n2; const outNet = g.outputNet != null ? g.outputNet : (g.meta && g.meta.outputNet != null ? g.meta.outputNet : null);
+        const aPowered = batteryPlusNets.length && netReachableToAny(inA, batteryPlusNets);
+        const bPowered = batteryPlusNets.length && netReachableToAny(inB, batteryPlusNets);
+        let outHigh = false;
+        if (block.dataset.type === 'and') outHigh = (aPowered && bPowered);
+        else outHigh = (aPowered || bPowered);
+        if (outHigh && outNet != null && batteryPlusNets.length) {
+          // tie output to first battery plus with a tiny resistor
+          resistors.push({ n1: outNet, n2: batteryPlusNets[0], R: 1e-3, block: block, meta: { type: 'logic-drive' } });
+          try { block.dataset.outputPowered = 'true'; block.classList.add('powered'); } catch(e){}
+        } else {
+          try { block.dataset.outputPowered = 'false'; block.classList.remove('powered'); } catch(e){}
+        }
+      } catch(e){}
+    });
+  } catch(e) { /* non-critical */ }
+          // find all battery plus nets in this model
+          const batteryPlusNets = vSources.map(v => v.nPlus).filter(x => x != null);
+          const aHigh = batteryPlusNets.includes(na2);
+          const bHigh = batteryPlusNets.includes(nb2);
+          let outHigh = false;
+          if (b.dataset.type === 'and') outHigh = (aHigh && bHigh);
+          else outHigh = (aHigh || bHigh);
+
+          if (outHigh && nout != null && batteryPlusNets.length > 0) {
+            // Connect output net to the first battery plus net via a low resistance so the solver sees a resistive path
+            resistors.push({ n1: nout, n2: batteryPlusNets[0], R: 1e-3, block: b, meta: { type: 'logic-drive' } });
+            // mark UI dataset so gate appears powered
+            b.dataset.outputPowered = 'true';
+            b.classList.add('powered');
+          } else {
+            b.dataset.outputPowered = 'false';
+            b.classList.remove('powered');
+          }
+        } catch (e) { /* non-critical */ }
+      }
     }
   });
 
   return { connectorList, cIndex, netMap, netFor, resistors, vSources, diodes };
 }
 
+// Evaluate simple digital logic using net reachability (ideal wires)
+// Returns: { poweredNets: Set, groundNets: Set, logicOutputs: Array<{block, outputNet, powered}> }
+function evaluateLogic(model){
+  // model: { connectorList, cIndex, netMap, netFor, resistors, vSources, diodes }
+  if (!model) return { poweredNets: new Set(), groundNets: new Set(), logicOutputs: [] };
+  const { netMap, resistors, vSources } = model;
+
+  // Build net adjacency ignoring R (treat any resistor/led/logic gate as a conductor for logic reachability)
+  const adj = new Map();
+  function addEdge(a,b){ if (a==null || b==null) return; const ka = String(a), kb = String(b); if (!adj.has(ka)) adj.set(ka, new Set()); if (!adj.has(kb)) adj.set(kb, new Set()); adj.get(ka).add(kb); adj.get(kb).add(ka); }
+  resistors.forEach(r => { try { addEdge(r.n1, r.n2); } catch(e){} });
+
+  // BFS from all battery plus nets to mark powered nets
+  const poweredNets = new Set();
+  const q = [];
+  (vSources || []).forEach(v => { if (v && v.nPlus != null) { const k = String(v.nPlus); if (!poweredNets.has(k)){ poweredNets.add(k); q.push(k); } } });
+  while (q.length){ const cur = q.shift(); const neigh = adj.get(cur) || new Set(); neigh.forEach(nk => { if (!poweredNets.has(nk)){ poweredNets.add(nk); q.push(nk); } }); }
+
+  // BFS from all battery minus nets to mark ground nets
+  const groundNets = new Set();
+  const qg = [];
+  (vSources || []).forEach(v => { if (v && v.nMinus != null) { const k = String(v.nMinus); if (!groundNets.has(k)){ groundNets.add(k); qg.push(k); } } });
+  while (qg.length){ const cur = qg.shift(); const neigh = adj.get(cur) || new Set(); neigh.forEach(nk => { if (!groundNets.has(nk)){ groundNets.add(nk); qg.push(nk); } }); }
+
+  // Find logic gates represented by resistors with meta.type === 'and'|'or'
+  const logicGates = (resistors || []).filter(r => r && r.meta && (r.meta.type === 'and' || r.meta.type === 'or'));
+  const logicOutputs = [];
+  logicGates.forEach(g => {
+    if (!g) return;
+    const block = g.block || (g.meta && g.meta.block) || null;
+    const type = g.meta && g.meta.type ? g.meta.type : (block ? block.dataset.type : null);
+    const in1 = g.n1; const in2 = g.n2;
+    const outNet = g.outputNet != null ? g.outputNet : (g.meta && g.meta.outputNet != null ? g.meta.outputNet : null);
+    const in1p = (in1 != null) && poweredNets.has(String(in1));
+    const in2p = (in2 != null) && poweredNets.has(String(in2));
+    let outp = false;
+    if (type === 'and') outp = in1p && in2p;
+    else if (type === 'or') outp = in1p || in2p;
+    // If gate drives true, treat its output net as powered for downstream logic/LEDs
+    if (outp && outNet != null){ poweredNets.add(String(outNet)); }
+    // update block visuals best-effort
+    try { if (block) { block.dataset.outputPowered = outp ? 'true' : 'false'; block.classList[outp ? 'add' : 'remove']('powered'); } } catch(e){}
+    logicOutputs.push({ block, outputNet: outNet, powered: outp });
+  });
+
+  return { poweredNets, groundNets, logicOutputs };
+}
 // Basic solver runner state
 let isBasicSimRunning = false;
 let basicSimInterval = null;
@@ -1541,6 +1744,37 @@ function applyBasicResults(results){
 function runBasicOnce(){
   const model = buildCircuitModel();
   if (!model || !model.netMap || model.netMap.size === 0) { updateSimBanner('Basic sim: no nets detected (check wiring or import).','error',true); setTimeout(()=>clearSimBanner(),3000); return; }
+  // SIMPLE UI-SIDE LOGIC: if gates should drive outputs, mark LEDs directly (bypass solver)
+  try {
+    // Evaluate logic using reachability (powered nets from battery +, ground nets from battery -)
+    const logic = evaluateLogic(model);
+    if (CT_DEBUG) {
+      try { console.debug('CT: Logic eval', { poweredCount: logic.poweredNets.size, groundCount: logic.groundNets.size, logicOutputs: logic.logicOutputs }); } catch(e){}
+    }
+
+    // Mark LEDs as powered when one terminal is in a powered net and the other is in a ground net
+    const leds = Array.from(workspace.querySelectorAll('.block')).filter(b => b.dataset.type === 'led');
+    leds.forEach(lb => {
+      try {
+        const lA = lb.querySelector('.input.left'); const lB = lb.querySelector('.input.right');
+        if (!lA || !lB) return;
+        const lnA = model.netFor(lA); const lnB = model.netFor(lB);
+        const leftPowered = lnA != null && logic.poweredNets.has(String(lnA));
+        const rightPowered = lnB != null && logic.poweredNets.has(String(lnB));
+        const leftGround = lnA != null && logic.groundNets.has(String(lnA));
+        const rightGround = lnB != null && logic.groundNets.has(String(lnB));
+        const lit = (leftPowered && rightGround) || (rightPowered && leftGround);
+        if (lit) {
+          lb.dataset.powered = 'true'; lb.classList.add('powered');
+          lb.dataset.current = String(Math.min(0.02, 0.005));
+          lb.dataset.voltageDrop = String(Number(lb.dataset.forwardVoltage || 2));
+        } else {
+          lb.dataset.powered = 'false'; lb.classList.remove('powered');
+          lb.dataset.current = '0'; lb.dataset.voltageDrop = '0';
+        }
+      } catch(e){}
+    });
+  } catch(e) { /* non-critical */ }
   if (CT_DEBUG) {
     try { console.debug('CT: Basic sim model', { nets: model.netMap.size, resistors: model.resistors.length, batteries: model.vSources.length, diodes: model.diodes.length }); } catch(e){}
   }
@@ -1725,7 +1959,7 @@ function fallbackSimplePowering() {
         'Ask yourself why a component is (or isn\'t) powered tracing the path of current helps a lot.',
         'Connector polarity tip: battery RIGHT → component RIGHT (anode) → component LEFT (cathode) → battery LEFT — this is the easiest series wiring pattern to light an LED.'
       ],
-      image: null
+      image: 'https://i.imgur.com/abcd123.png'
     },
     {
       id: 1,
@@ -1762,12 +1996,13 @@ function fallbackSimplePowering() {
     },
     {
       id: 4,
-      title: 'Connecting to a 7-segment display',
-      desc: "A 7-segment display is made of multiple LED segments. Plan which segments to drive, use resistors for each segment, and decide between a common-anode or common-cathode wiring approach.",
+      title: 'Using AND & OR Gates',
+      desc: "Learn how to control outputs using AND and OR gates. Plan how to combine input signals with the gates to achieve the desired output in terms of True or False.",
       tips: [
-        'Each segment behaves like an LED: give it a resistor to limit current.',
-        'Decide whether your display is common-anode or common-cathode and wire accordingly.',
-        'Start by lighting a single segment before trying to drive all seven.'
+        'AND gates output True only if all inputs are True.',
+        'OR gates output True if at least one input is True.',
+        'Start by connecting a single AND or OR gate and testing its behavior before combining multiple gates.',
+        'Think about how to combine multiple gates to get more complex True/False outputs.'
       ],
       image: null
     },
@@ -1819,9 +2054,35 @@ function fallbackSimplePowering() {
     const modal = document.getElementById('answer-modal');
     const img = document.getElementById('answer-image');
     if (!modal || !img) return;
-    // placeholder inline SVG image
-    const svgData = encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='800' height='480'><rect width='100%' height='100%' fill='%23ffffff' /><text x='50%' y='50%' font-size='28' text-anchor='middle' fill='%236b7280'>Answer image placeholder</text></svg>`);
-    img.src = `data:image/svg+xml;utf8,${svgData}`;
+    // Determine image for this level: try level.image, then images/<id>.png, then images/components/<id>.png
+    const lvl = (typeof id === 'number') ? levels.find(l=>l.id===id) : levels[0];
+    const svgPlaceholder = encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='800' height='480'><rect width='100%' height='100%' fill='%23ffffff' /><text x='50%' y='50%' font-size='28' text-anchor='middle' fill='%236b7280'>Answer image not available</text></svg>`);
+    const candidates = [];
+    if (lvl && lvl.image) candidates.push(lvl.image);
+    if (typeof id === 'number') {
+      candidates.push(`images/${id}.png`);
+      candidates.push(`images/components/${id}.png`);
+      // try jpg/webp variants as a last effort
+      candidates.push(`images/components/${id}.jpg`);
+      candidates.push(`images/components/${id}.webp`);
+    }
+
+    // iterator to try candidates in order
+    let ci = 0;
+    function loadNextCandidate(){
+      if (ci >= candidates.length) {
+        img.onerror = null;
+        img.src = `data:image/svg+xml;utf8,${svgPlaceholder}`;
+        return;
+      }
+      const src = candidates[ci++];
+      img.onerror = loadNextCandidate;
+      img.onload = function(){ img.onerror = null; img.onload = null; };
+      img.src = src;
+    }
+
+    img.alt = lvl ? `${lvl.title} answer` : 'Answer image';
+    loadNextCandidate();
     modal.classList.add('visible');
     modal.setAttribute('aria-hidden','false');
   }

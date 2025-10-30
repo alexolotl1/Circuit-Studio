@@ -38,7 +38,11 @@
     color: #6b7280; 
 }
 
-.palette-list { display: grid; gap: 10px; }
+.palette-list { display: grid; gap: 10px; grid-template-columns: repeat(2, 1fr); }
+
+/* Make palette items square and center their content */
+.block.palette { aspect-ratio: 1 / 1; display:flex; align-items:center; justify-content:center; padding: 0; }
+.block.palette .component-label { margin: 0; font-size: 14px; }
 
 /* Blocks area sits in the upper 40% of the left column; properties take remaining 60% */
 .blocks-area { flex: 0 0 40%; overflow: auto; }
@@ -52,6 +56,59 @@
 /* White workspace square */
 #workspace { width: 820px; height: 820px; max-width: 90vmin; max-height: 90vmin; background: #f8f8f8; border: 2px solid #111827; border-radius: 10px; position: relative; overflow: hidden; box-shadow: 0 12px 24px rgba(0,0,0,0.08); }
 #workspace.dark { width: 820px; height: 820px; max-width: 90vmin; max-height: 90vmin; background: #aeaeae; border: 2px solid #111827; border-radius: 10px; position: relative; overflow: hidden; box-shadow: 0 12px 24px rgba(0,0,0,0.08); }
+
+/* Logic Gates */
+.block[data-type="and"],
+.block[data-type="or"] {
+  min-height: 60px;
+  background: #f8fafc;
+  transition: background-color 0.2s ease;
+}
+
+.block[data-type="and"] .component-label,
+.block[data-type="or"] .component-label {
+  color: #1e293b;
+}
+
+.block[data-type="and"].powered,
+.block[data-type="or"].powered {
+  background: #e0f2fe;
+  border-color: #0ea5e9;
+}
+
+.block[data-type="and"] .input.left[data-powered="true"],
+.block[data-type="and"] .input.right[data-powered="true"],
+.block[data-type="or"] .input.left[data-powered="true"],
+.block[data-type="or"] .input.right[data-powered="true"] {
+  background: #38bdf8;
+}
+
+.block[data-type="and"] .output[data-powered="true"],
+.block[data-type="or"] .output[data-powered="true"] {
+  background: #0ea5e9;
+}
+
+/* Input/Output indicators for logic gates */
+.block[data-type="and"] .input-indicators,
+.block[data-type="or"] .input-indicators {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.block[data-type="and"] .input-indicator,
+.block[data-type="or"] .input-indicator {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #cbd5e1;
+}
+
+.block[data-type="and"] .input-indicator[data-active="true"],
+.block[data-type="or"] .input-indicator[data-active="true"] {
+  background: #0ea5e9;
+}
+
 /* Blocks */
 .block { 
   user-select: none; 
@@ -108,6 +165,9 @@
 .block.palette[data-type="resistor"] { background: #dbeafe; border-color: #93c5fd; }
 .block.palette[data-type="battery"] { background: #dcfce7; border-color: #86efac; }
 .block.palette[data-type="switch"] { background: #cbd1d9; border-color: #d1d5db; }
+/* Gate palette styles */
+.block.palette[data-type="and"] { background: #ecfeff; border-color: #67e8f9; }
+.block.palette[data-type="or"] { background: #fff7ed; border-color: #fdba74; }
 
 /* Component images */
 .block[data-type="led"] .component-image { background-image: url('images/components/led.png'); }
@@ -131,13 +191,15 @@
   right: 6px;
   top: 50%;
   height: 2px;
-  background: #374151;
+  
   transform: translateY(-50%);
 }
 .block[data-type="switch"][data-state="off"]::before {
   background: #d1d5db;
 }
-
+.block[data-type="switch"][data-state="on"]::before {
+  background: #374151;
+}
 /* Instances inside workspace */
 #workspace .block.instance { position: absolute; }
 
@@ -145,6 +207,81 @@
 #workspace .block[data-type="led"] { background: #fee2e2; border-color: #fca5a5; }
 #workspace .block[data-type="resistor"] { background: #dbeafe; border-color: #93c5fd; }
 #workspace .block[data-type="battery"] { background: #dcfce7; border-color: #86efac; }
+/* Gate instances */
+#workspace .block[data-type="and"] { background: #ecfeff; border-color: #67e8f9; }
+#workspace .block[data-type="or"] { background: #fff7ed; border-color: #fdba74; }
+
+/* Output indicator for gates */
+#workspace .block[data-type="and"][data-output-powered="true"]::after,
+#workspace .block[data-type="or"][data-output-powered="true"]::after {
+  content: '';
+  position: absolute;
+  right: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 10px;
+  height: 10px;
+  
+  background: #10b981;
+  box-shadow: 0 0 8px rgba(16,185,129,0.6);
+}
+
+/* Gate connector layout: two inputs on left (evenly spaced), one output on right (center) */
+#workspace .block[data-type="and"] .input.left,
+#workspace .block[data-type="or"] .input.left {
+  position: absolute;
+  left: -8px;
+  width: 12px;
+  height: 12px;
+  
+  z-index: 60;
+}
+
+#workspace .block[data-type="and"] .input.right,
+#workspace .block[data-type="or"] .input.right {
+  position: absolute;
+  right: -8px; /* for blocks that might still use right as output */
+  width: 12px;
+  height: 12px;
+  z-index: 60;
+}
+
+/* position the two input connectors on the left side (use .input.left and .input.right as the two inputs)
+   and place the explicit output connector on the right middle */
+#workspace .block[data-type="and"] .input.left,
+#workspace .block[data-type="or"] .input.left,
+#workspace .block[data-type="and"] .input.right,
+#workspace .block[data-type="or"] .input.right {
+  position: absolute;
+  left: -8px;
+  width: 12px;
+  height: 12px;
+  
+  z-index: 60;
+}
+
+/* First input (visually higher) */
+#workspace .block[data-type="and"] .input.left { top: 28%; }
+#workspace .block[data-type="or"] .input.left { top: 28%; }
+
+/* Second input (visually lower) */
+#workspace .block[data-type="and"] .input.right { top: 72%; }
+#workspace .block[data-type="or"] .input.right { top: 72%; }
+
+/* output connector on right middle */
+#workspace .block[data-type="and"] .input.output,
+#workspace .block[data-type="or"] .input.output,
+#workspace .block[data-type="and"] .input.out,
+#workspace .block[data-type="or"] .input.out {
+  position: absolute;
+  right: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 12px;
+  height: 12px;
+  
+  z-index: 60;
+}
 
 /* Dragging clone that follows pointer before placement */
 .block.dragging { opacity: 0.85; pointer-events: none; }
@@ -483,6 +620,21 @@ body.dark #hover-blurb.resistor {
 body.dark #hover-blurb.led { 
   background: linear-gradient(90deg,#fff7ed,#fff8f1);
   border-color: #f59e0b;
+}
+
+/* Ensure important action buttons show black text in dark mode (Show Answer / Submit Answer etc.) */
+body.dark .prop-actions button,
+body.dark .lesson-actions button,
+body.dark #answer-modal .modal button,
+body.dark .prop-actions input[type="file"] + label {
+  color: #000 !important;
+}
+
+/* Also ensure any primary simulation buttons in dark mode have readable black text */
+body.dark .sim-btn,
+body.dark .sim-btn.stop,
+body.dark .theme-toggle button {
+  color: #000 !important;
 }
 
 /* Slight visual refresh for panels */
