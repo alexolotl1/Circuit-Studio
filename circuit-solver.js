@@ -103,8 +103,8 @@
       if (!solutionVector) return { success:false };
       const nodeVoltages = solutionVector.slice(0,numNodes); const sourceCurrents = solutionVector.slice(numNodes);
       // compute branch currents
-      const resistorResults = resistorList.map(r=>{ if (r.n1==null || r.n2==null) return {I:0}; const v1=nodeVoltages[r.n1]||0; const v2=nodeVoltages[r.n2]||0; const I=(v1-v2)/(r.R||1e-12); return {I, v1, v2}; });
-      const diodeResults = diodeList.map(d=>{ if (d.n1==null || d.n2==null) return {I:0}; const v1=nodeVoltages[d.n1]||0; const v2=nodeVoltages[d.n2]||0; const Vd=v1-v2; const Is=(d.Is==null)?1e-12:d.Is; const Icalc = Is*(Math.exp(Vd/(d.nVt||0.026))-1); return {I:Icalc, Vd}; });
+  const resistorResults = resistorList.map((r, idx)=>{ if (r.n1==null || r.n2==null) return {meta:r, idx, I:0}; const v1=nodeVoltages[r.n1]||0; const v2=nodeVoltages[r.n2]||0; const I=(v1-v2)/(r.R||1e-12); return {meta:r, idx, I, v1, v2}; });
+  const diodeResults = diodeList.map((d, idx)=>{ if (d.n1==null || d.n2==null) return {meta:d, idx, I:0}; const v1=nodeVoltages[d.n1]||0; const v2=nodeVoltages[d.n2]||0; const Vd=v1-v2; const Is=(d.Is==null)?1e-12:d.Is; const Icalc = Is*(Math.exp(Vd/(d.nVt||0.026))-1); return {meta:d, idx, I:Icalc, Vd}; });
       return { success:true, V: nodeVoltages, J: sourceCurrents, resistorResults, diodeResults };
     }
   };

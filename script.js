@@ -929,21 +929,212 @@ function getOtherConnector(conn) {
 }
 
 // Evaluate circuits in the workspace and update component states (e.g., LEDs)
-function evaluateCircuit() {
+// Control whether automatic evaluation is enabled. Default: off (only run when user starts simulation).
+let autoEvaluateEnabled = false;
+
+function evaluateCircuit(force = false) {
+  // Only run automatically if enabled, or if caller forces evaluation (e.g., manual run)
+  if (!autoEvaluateEnabled && !force) return { success: false, reason: 'auto-eval-disabled' };
   // Build blocks and reset metadata
   const blocks = Array.from(workspace.querySelectorAll('.block'));
-  blocks.forEach(b => { delete b.dataset.current; delete b.dataset.voltageDrop; if (b.dataset.type === 'battery' && !b.dataset.voltage) b.dataset.voltage = 5; if (b.dataset.type === 'resistor' && !b.dataset.resistance) b.dataset.resistance = 100; if (b.dataset.type === 'led' && !b.dataset.forwardVoltage) b.dataset.forwardVoltage = 2; if (b.dataset.type === 'led') { b.dataset.powered = 'false'; b.classList.remove('powered'); } });
+  blocks.forEach(b => { 
+    delete b.dataset.current; 
+    delete b.dataset.voltageDrop; 
+    if (b.dataset.type === 'battery' && !b.dataset.voltage) b.dataset.voltage = 5; 
+    if (b.dataset.type === 'resistor' && !b.dataset.resistance) b.dataset.resistance = 100; 
+    if (b.dataset.type === 'led') { 
+      if (!b.dataset.forwardVoltage) b.dataset.forwardVoltage = 2;
+      b.dataset.powered = 'false'; 
+      b.classList.remove('powered'); 
+    } 
+  });
 
-  // Build connector list & nets using union-find of wires
+  // Build the connection graph and electrical nets using union-find data structure
+  const connectedTo = new Map();
+  let netData;
+
+  // First pass: Build basic connectivity graph
+  connections.forEach(c => {
+    if (!c.conn1 || !c.conn2) return;
+    
+    const block1 = c.conn1.closest('.block');
+    const block2 = c.conn2.closest('.block');
+    if (!block1 || !block2 || block1 === block2) return;
+    
+    const id1 = block1.dataset.id;
+    const id2 = block2.dataset.id;
+    
+    if (!connectedTo.has(id1)) connectedTo.set(id1, new Set());
+    if (!connectedTo.has(id2)) connectedTo.set(id2, new Set());
+    
+    connectedTo.get(id1).add(id2);
+    connectedTo.get(id2).add(id1);
+  });
+
+  // Second pass: Build electrical nets with union-find
+  function buildElectricalNets() {
+    // Initialize connector nets
+    const connectorToNet = new Map();
+    const netParents = new Map();
+    let nextNetId = 0;
+
+    // Helper: Find net's root with path compression
+    function findNetRoot(netId) {
+      if (!netParents.has(netId)) {
+        netParents.set(netId, netId);
+        return netId;
+      }
+      if (netParents.get(netId) !== netId) {
+        netParents.set(netId, findNetRoot(netParents.get(netId)));
+      }
+      return netParents.get(netId);
+    }
+
+    // Helper: Union two nets
+    function unifyNets(net1, net2) {
+      const root1 = findNetRoot(net1);
+      const root2 = findNetRoot(net2);
+      if (root1 !== root2) {
+        netParents.set(root2, root1);
+      }
+    }
+
+    // Initialize all connectors with unique nets
+    const connectors = Array.from(workspace.querySelectorAll('.input'));
+    connectors.forEach(conn => {
+      connectorToNet.set(conn, nextNetId++);
+    });
+
+    if (CT_DEBUG) {
+      console.debug('CT: Processing electrical connections...');
+    }
+
+    // Process all connections to unify nets
+    connections.forEach(c => {
+      if (!c.conn1 || !c.conn2) return;
+      
+      const net1 = connectorToNet.get(c.conn1);
+      const net2 = connectorToNet.get(c.conn2);
+      
+      if (net1 != null && net2 != null) {
+        unifyNets(net1, net2);
+        if (CT_DEBUG) {
+          const block1 = c.conn1.closest('.block');
+          const block2 = c.conn2.closest('.block');
+          console.debug(`CT: Connected ${block1.dataset.id}/${c.conn1.dataset.terminal} to ${block2.dataset.id}/${c.conn2.dataset.terminal}`);
+        }
+      }
+    });
+
+    // Build final connector -> net mapping (preserve terminal-level nets)
+    const finalNetMap = new Map();
+    const connectorToNetFinal = new Map();
+    let netCounter = 0;
+
+    // For every connector, find its root and assign a compact net id
+    const allConnectors = Array.from(workspace.querySelectorAll('.input'));
+    allConnectors.forEach(conn => {
+      const origNet = connectorToNet.get(conn);
+      if (origNet == null) return;
+      const root = findNetRoot(origNet);
+      if (!finalNetMap.has(root)) {
+        finalNetMap.set(root, netCounter++);
+      }
+      connectorToNetFinal.set(conn, finalNetMap.get(root));
+    });
+
+    if (CT_DEBUG) {
+      console.debug('CT: Connector net mapping:', Array.from(connectorToNetFinal.entries()).map(([c,n])=>({block:c.dataset.blockId, term:c.dataset.terminal, net:n}))); 
+    }
+
+    return connectorToNetFinal;
+  }
+
+  netData = buildElectricalNets();
+
+  if (CT_DEBUG) {
+    // netData maps blockId -> netNumber
+    // netData is a Map(connectorElement -> netNumber)
+    console.debug('CT: Connector net assignments:', Array.from(netData.entries()).map(([conn, net]) => ({ connector: conn.dataset.blockId + '/' + conn.dataset.terminal, net })));
+  }
+
+  // Function to get net number for a connector
   const connectorList = Array.from(workspace.querySelectorAll('.input'));
-  const cIndex = new Map(connectorList.map((c,i) => [c,i]));
-  const parent = connectorList.map((_,i) => i);
-  function find(i){ return parent[i]===i?i:(parent[i]=find(parent[i])); }
-  function union(i,j){ const ri=find(i), rj=find(j); if(ri!==rj) parent[rj]=ri; }
-  connections.forEach(c => { if (!c.conn1 || !c.conn2) return; const i=cIndex.get(c.conn1), j=cIndex.get(c.conn2); if (i!=null && j!=null) union(i,j); });
-  const netId = connectorList.map((_,i) => find(i));
-  const netMap = new Map(); let netCounter = 0;
-  function netFor(conn){ const idx = cIndex.get(conn); if (idx==null) return null; const r = netId[idx]; if (!netMap.has(r)) netMap.set(r, netCounter++); return netMap.get(r); }
+
+  // Build netMap (netNumber -> set of blockIds) from connector->net mapping
+  const netMap = new Map();
+  try {
+    netData.forEach((net, conn) => {
+      if (!netMap.has(net)) netMap.set(net, new Set());
+      netMap.get(net).add(conn.dataset.blockId || '(no-block)');
+    });
+  } catch (e) {
+    // netData may be undefined or not iterable in some error cases
+  }
+  
+  if (CT_DEBUG) {
+    console.debug('CT: Processing wire connections:', connections.map(c => ({
+      from: `${c.conn1.dataset.blockId}/${c.conn1.dataset.terminal}`,
+      to: `${c.conn2.dataset.blockId}/${c.conn2.dataset.terminal}`
+    })));
+  }
+  
+  // First, just collect all connections to build adjacency
+  const adjList = new Map();
+  connections.forEach(c => {
+    if (!c.conn1 || !c.conn2) return;
+    
+    const id1 = c.conn1.dataset.blockId;
+    const id2 = c.conn2.dataset.blockId;
+    
+    if (!adjList.has(id1)) adjList.set(id1, new Set());
+    if (!adjList.has(id2)) adjList.set(id2, new Set());
+    adjList.get(id1).add(id2);
+    adjList.get(id2).add(id1);
+  });
+
+  // Now find connected components using simple DFS
+  const visited = new Set();
+  const componentNets = new Map();
+  let currentNet = 0;
+
+  function dfs(blockId, netNumber) {
+    if (visited.has(blockId)) return;
+    visited.add(blockId);
+    componentNets.set(blockId, netNumber);
+    
+    const neighbors = adjList.get(blockId) || new Set();
+    neighbors.forEach(neighbor => {
+      dfs(neighbor, netNumber);
+    });
+  }
+
+  // Assign nets to connected components
+  blocks.forEach(b => {
+    const blockId = b.dataset.id;
+    if (!visited.has(blockId)) {
+      dfs(blockId, currentNet++);
+    }
+  });
+
+  if (CT_DEBUG) {
+    console.debug('CT: Component groups:', Array.from(componentNets.entries()));
+  }
+
+  // Simplified netFor function - just looks up the component's net
+  function netFor(conn) {
+    // netData is a Map keyed by connector elements
+    return netData.get(conn) ?? null;
+  }
+
+  // Extra validation - check for circuit continuity
+  if (CT_DEBUG) {
+    // Determine disconnected component groups (blocks connected by wires)
+    const compGroups = new Set(Array.from(componentNets.values()));
+    if (compGroups.size > 1) {
+      console.warn('CT: Circuit may be disconnected - found separate component groups:', compGroups.size);
+    }
+  }
 
   // Debug: print mapping of connectors -> net ids
   if (CT_DEBUG) {
@@ -958,18 +1149,47 @@ function evaluateCircuit() {
     } catch (e) { console.debug('CT: debug mapping failed', e); }
   }
 
+  // Helper to check if component terminals are properly connected
+  function validateComponentConnections(block) {
+    const left = block.querySelector('.input.left');
+    const right = block.querySelector('.input.right');
+    if (!left || !right) return false;
+    
+    const leftNet = netFor(left);
+    const rightNet = netFor(right);
+    
+    if (leftNet === null || rightNet === null) {
+      if (CT_DEBUG) {
+        console.warn(`CT: Component ${block.dataset.id} (${block.dataset.type}) has disconnected terminal(s)`);
+      }
+      return false;
+    }
+    
+    return true;
+  }
+
   // Collect elements for solver
   const resistors = []; const vSources = []; const diodes = [];
   blocks.forEach(b => {
     const left = b.querySelector('.input.left');
     const right = b.querySelector('.input.right');
     if (!left || !right) return;
+    
+    // Skip components with invalid connections
+    if (!validateComponentConnections(b)) return;
+    
     const na = netFor(left); const nb = netFor(right);
-    if (b.dataset.type === 'resistor') resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
-    else if (b.dataset.type === 'battery') vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
-    else if (b.dataset.type === 'led') {
+    if (b.dataset.type === 'resistor') {
+      resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||1e-12, block: b });
+    } else if (b.dataset.type === 'battery') {
+      vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
+    } else if (b.dataset.type === 'led') {
       // LEDs are now handled as resistors with meta.type='led' to simplify the circuit model
       resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||100, block: b, meta: {type:'led'} });
+    } else if (b.dataset.type === 'switch') {
+      // Model switches as very low R when on, very high R when off so the simple solver can see them
+      const isOn = b.dataset.state !== 'off';
+      resistors.push({ n1: na, n2: nb, R: isOn ? 1e-6 : 1e12, block: b, meta: {type: 'switch'} });
     }
   });
 
@@ -977,6 +1197,22 @@ function evaluateCircuit() {
     try {
       console.debug('CT: solver inputs', { connectorCount: connectorList.length, resistors: resistors.length, vSources: vSources.length, diodes: diodes.length });
     } catch (e) { console.debug('CT: debug inputs failed', e); }
+  }
+
+  // Try the simple, path-based solver first (preferred fallback for teaching/demo)
+  try {
+    if (window.SimpleSolver && window.SimpleSolver.simulate) {
+      const simpleModel = { netMap, connectorList, netFor, resistors, vSources, diodes };
+      const simpleRes = window.SimpleSolver.simulate(simpleModel);
+      if (CT_DEBUG) console.debug('CT: SimpleSolver result', simpleRes);
+      if (simpleRes && simpleRes.success) {
+        // Apply results and exit early - keep behavior simple for demo mode
+        applyBasicResults(simpleRes);
+        return { success: true, source: 'simple' };
+      }
+    }
+  } catch (e) {
+    if (CT_DEBUG) console.debug('CT: SimpleSolver simulate failed', e);
   }
 
   if (netMap.size === 0) {
@@ -1000,11 +1236,36 @@ function evaluateCircuit() {
     } catch(e) { console.debug('CT: debug-no-nets failed', e); }
     return { success: false, reason: 'no-nets' };
   }
-  const N = netMap.size;
+  // Compact and validate net numbering: solver expects node indices 0..N-1
+  // Collect all used net IDs from components
+  const usedNets = new Set();
+  resistors.forEach(r => { if (r.n1 != null) usedNets.add(r.n1); if (r.n2 != null) usedNets.add(r.n2); });
+  vSources.forEach(v => { if (v.nPlus != null) usedNets.add(v.nPlus); if (v.nMinus != null) usedNets.add(v.nMinus); });
+  diodes.forEach(d => { if (d.n1 != null) usedNets.add(d.n1); if (d.n2 != null) usedNets.add(d.n2); });
+
+  // Build remapping from old net id -> compact id
+  const usedList = Array.from(usedNets).sort((a,b)=>a-b);
+  const remap = new Map();
+  usedList.forEach((old, idx) => remap.set(old, idx));
+  const N = usedList.length;
+
+  if (CT_DEBUG) console.debug('CT: remap nets', { usedList, remap: Object.fromEntries(remap) });
+
+  // Create remapped shallow copies for solver (don't mutate DOM-backed objects)
+  const remappedResistors = resistors.map(r => ({ ...r, n1: r.n1==null?null:remap.get(r.n1), n2: r.n2==null?null:remap.get(r.n2) }));
+  const remappedVSources = vSources.map(v => ({ ...v, nPlus: v.nPlus==null?null:remap.get(v.nPlus), nMinus: v.nMinus==null?null:remap.get(v.nMinus) }));
+  const remappedDiodes = diodes.map(d => ({ ...d, n1: d.n1==null?null:remap.get(d.n1), n2: d.n2==null?null:remap.get(d.n2) }));
+
+  if (CT_DEBUG) {
+    try {
+      console.debug('CT: remappedResistors:', remappedResistors.map(r => ({ n1: r.n1, n2: r.n2, block: r.block && r.block.dataset ? r.block.dataset.id : null, R: r.R })));
+      console.debug('CT: remappedVSources:', remappedVSources.map(v => ({ nPlus: v.nPlus, nMinus: v.nMinus, block: v.block && v.block.dataset ? v.block.dataset.id : null, V: v.V })));
+    } catch (e) { /* non-critical */ }
+  }
 
   // Call library solver
   if (typeof CircuitSolver === 'undefined' || !CircuitSolver.solveMNA) { fallbackSimplePowering(); return { success:false, reason:'no-solver' }; }
-  const sol = CircuitSolver.solveMNA(N, resistors, vSources, diodes, { maxIter: 60, tol: 1e-8, damping: 0.7 });
+  const sol = CircuitSolver.solveMNA(N, remappedResistors, remappedVSources, remappedDiodes, { maxIter: 60, tol: 1e-8, damping: 0.7 });
   if (!sol || !sol.success) { fallbackSimplePowering(); return { success:false, reason:'solver-failed' }; }
 
   // annotate results
@@ -1148,10 +1409,47 @@ function buildCircuitModel(){
   const parent = connectorList.map((_,i) => i);
   function find(i){ return parent[i]===i?i:(parent[i]=find(parent[i])); }
   function union(i,j){ const ri=find(i), rj=find(j); if(ri!==rj) parent[rj]=ri; }
-  connections.forEach(c => { if (!c.conn1 || !c.conn2) return; const i=cIndex.get(c.conn1), j=cIndex.get(c.conn2); if (i!=null && j!=null) union(i,j); });
-  const netId = connectorList.map((_,i) => find(i));
-  const netMap = new Map(); let netCounter = 0;
-  function netFor(conn){ const idx = cIndex.get(conn); if (idx==null) return null; const r = netId[idx]; if (!netMap.has(r)) netMap.set(r, netCounter++); return netMap.get(r); }
+  // Process all connections first to build complete sets
+  connections.forEach(c => { 
+    if (!c.conn1 || !c.conn2) return; 
+    const i=cIndex.get(c.conn1), j=cIndex.get(c.conn2); 
+    if (i!=null && j!=null) {
+      union(i,j);
+    }
+  });
+
+  // First pass: identify all unique root nodes
+  const roots = new Set();
+  connectorList.forEach((_, i) => {
+    roots.add(find(i));
+  });
+  
+  // Create consistent net mapping
+  const netMap = new Map();
+  let netCounter = 0;
+  Array.from(roots).sort().forEach(root => {
+    netMap.set(root, netCounter++);
+  });
+  
+  // Map function to get net number for a connector
+  function netFor(conn) {
+    const idx = cIndex.get(conn);
+    if (idx == null) return null;
+    const root = find(idx);
+    return netMap.get(root);
+  }
+  
+  if (CT_DEBUG) {
+    console.debug('CT: Net mapping:', 
+      Array.from(netMap.entries()).map(([root, net]) => ({
+        root,
+        net,
+        connectors: connectorList
+          .filter((_, i) => find(i) === root)
+          .map(c => `${c.dataset.blockId}/${c.dataset.terminal}`)
+      }))
+    );
+  }
 
   // Collect components
   const blocks = Array.from(workspace.querySelectorAll('.block'));
@@ -1362,6 +1660,8 @@ function fallbackSimplePowering() {
     // Start/Stop simulation runner
     function startSimulation(button){
       if (isSimRunning) return;
+      // Enable automatic evaluation when simulation starts
+      autoEvaluateEnabled = true;
       disableEditingDuringSim(true);
       if (button) { button.classList.add('stop'); button.textContent = 'Stop Simulation'; }
       simTickCount = 0; simNoProgressCount = 0; lastSimSummary = { ledCount: 0, totalCurrent: 0 };
@@ -1390,6 +1690,8 @@ function fallbackSimplePowering() {
 
     function stopSimulation(button){
       if (!isSimRunning) return;
+      // Disable automatic evaluation when simulation stops
+      autoEvaluateEnabled = false;
       disableEditingDuringSim(false);
       if (button) { button.classList.remove('stop'); button.textContent = 'Run Simulation'; }
       if (simInterval) { clearInterval(simInterval); simInterval = null; }

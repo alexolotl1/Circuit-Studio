@@ -7,48 +7,53 @@ window.SimpleSolver = (function() {
 
   function findAllPaths(start, end, excludeBattery, adj, maxPaths = 20) {
     if (start == null || end == null) return [];
+    // Use string keys to avoid number/string key mismatches between different callers
+    const sKey = String(start);
+    const eKey = String(end);
     const paths = [];
-    const visited = new Set();
-    
+    const visited = new Map();  // track visit count per node (string keys)
+
     function dfs(current, path, edges) {
       if (paths.length >= maxPaths) return;
       
-      // Found a path to end node
-      if (current === end) {
-        // Add path if it has at least one component and isn't just the battery
+      // Found a path to end node (compare against stringified end key)
+      if (current === eKey) {
+        // Always consider the path valid if it reaches the end
+        // and contains at least one component
         const hasComponent = edges.some(e => e && (e.type === 'resistor' || e.type === 'led'));
-        const isNotJustBattery = path.length > 2 || hasComponent;
-        if (isNotJustBattery) {
+        if (hasComponent) {
           paths.push({nets: [...path], edges: [...edges]});
         }
-        return;
+        // Do NOT return here — allow exploration to continue so we can find
+        // longer paths that visit the end node after traversing components.
+        // Visiting is still controlled by the `visited` counts to avoid loops.
       }
       
       const neighbors = adj.get(current) || [];
       for (const {to, meta} of neighbors) {
-        // Skip the excluding battery to prevent direct short
-        if (excludeBattery && meta && meta.type === 'battery' && meta.meta === excludeBattery) continue;
+        // Initialize visit count if not seen
+        if (!visited.has(to)) visited.set(to, 0);
         
-        // Allow a node to be visited twice (for parallel paths) but not more
-        const visitsToNode = path.filter(n => n === to).length;
-        if (visitsToNode >= 2) continue;
+        // Allow visiting each node up to twice to handle parallel paths
+        if (visited.get(to) >= 2) continue;
         
-        // Prevent immediate backtracking unless it's through a component
-        const isBacktrack = path.length >= 2 && to === path[path.length - 2];
-        if (isBacktrack && (!meta || meta.type === 'wire')) continue;
-        
-        visited.add(to);
+        // Count this visit
+        visited.set(to, visited.get(to) + 1);
         path.push(to);
         edges.push(meta);
+        
         dfs(to, path, edges);
+        
+        // Backtrack
         edges.pop();
         path.pop();
-        visited.delete(to);
+        visited.set(to, visited.get(to) - 1);
       }
     }
     
-    visited.add(start);
-    dfs(start, [start], [null]);
+    // Start visit count for path-finding: use Map#set (visited is a Map of counts)
+    visited.set(sKey, 1);
+    dfs(sKey, [sKey], [null]);
     return paths;
   }
 
@@ -56,6 +61,23 @@ window.SimpleSolver = (function() {
     try {
       if (!model) return { success: false, reason: 'no-model' };
       const { netMap, resistors, vSources } = model;  // We don't use diodes array - LEDs are in resistors with meta.type='led'
+      
+      if (window.CT_DEBUG) {
+        console.debug('SimpleSolver: Input model:', {
+          nets: netMap ? netMap.size : 0,
+          resistors: resistors ? resistors.map(r => ({
+            n1: r.n1, 
+            n2: r.n2, 
+            R: r.R,
+            type: r.meta?.type || 'resistor'
+          })) : [],
+          vSources: vSources ? vSources.map(v => ({
+            plus: v.nPlus,
+            minus: v.nMinus,
+            V: v.V
+          })) : []
+        });
+      }
       
       if (window.CT_DEBUG) {
         console.debug('SimpleSolver: Starting simulation with:', {
@@ -69,10 +91,11 @@ window.SimpleSolver = (function() {
       const adj = new Map();
       function addAdj(a, b, meta) { 
         if (a == null || b == null) return; 
-        if (!adj.has(a)) adj.set(a, []); 
-        adj.get(a).push({to: b, meta}); 
-        if (!adj.has(b)) adj.set(b, []); 
-        adj.get(b).push({to: a, meta}); 
+        const ka = String(a), kb = String(b);
+        if (!adj.has(ka)) adj.set(ka, []); 
+        adj.get(ka).push({to: kb, meta}); 
+        if (!adj.has(kb)) adj.set(kb, []); 
+        adj.get(kb).push({to: ka, meta}); 
       }
       
       // Add all resistors and LEDs to adjacency (LEDs are resistors with meta.type='led')
@@ -85,6 +108,7 @@ window.SimpleSolver = (function() {
 
       const resistorResults = [];
       const diodeResults = [];
+  const pathSummaries = [];
 
       // Find all possible paths for each voltage source
       vSources.forEach(vs => {
@@ -95,17 +119,7 @@ window.SimpleSolver = (function() {
         if (window.CT_DEBUG) console.debug('SimpleSolver: Found paths:', paths);
         if (!paths || paths.length === 0) return;
 
-        // First accumulate total voltage from all batteries in series
-        let totalVoltage = Number(vs.V || 0);
-        paths.forEach(path => {
-          path.edges.forEach(edge => {
-            if (edge && edge.type === 'battery' && edge.meta !== vs) {
-              totalVoltage += Number(edge.meta.V || 0);
-            }
-          });
-        });
-
-        // Process each path separately
+  // Process each path separately
         paths.forEach(p => {
           if (!p || !p.nets || p.nets.length < 2) return;
           
@@ -115,6 +129,9 @@ window.SimpleSolver = (function() {
               edges: p.edges.map(e => e ? {type: e.type, n1: e.meta?.n1, n2: e.meta?.n2} : null)
             });
           }
+          
+          // Use simple battery voltage for this path
+          const Vb = Number(vs.V || 0);
           
           // Build explicit edge list between consecutive nets
           const edgeList = [];
@@ -142,7 +159,8 @@ window.SimpleSolver = (function() {
               Rsum += isLED ? 10 : Number(componentMatches[0].meta.R || 0);
             } else if (componentMatches.length > 1) {
               let Gsum = 0;
-              resistorMatches.forEach(rm => {
+              const regularResistors = componentMatches.filter(m => m.type === 'resistor');
+              regularResistors.forEach(rm => {
                 const Rv = Number(rm.meta.R || 0) || 1e-12;
                 Gsum += 1 / Rv;
               });
@@ -150,38 +168,35 @@ window.SimpleSolver = (function() {
             }
           });
 
-          // compute net voltage along path
-          let Vsum = 0;
+          const DEFAULT_R = 10;
+          if (Rsum <= 0) Rsum = DEFAULT_R;
+          
+          // Simple current calculation using Ohm's Law
+          const Iraw = Math.abs(Vb) / Rsum;
+          // Round currents to reasonable precision for display (6 decimal places)
+          const I = Number(Iraw.toFixed(6));
+
+          if (window && window.CT_DEBUG) {
+            try {
+              console.debug('SimpleSolver: path Rsum/I', { Rsum, I });
+              console.debug('SimpleSolver: raw edgeList', edgeList.map(matches => matches ? matches.map(m => ({ type: m.type, idx: m.idx, n1: m.meta && m.meta.n1, n2: m.meta && m.meta.n2 })) : null));
+            } catch(e) {}
+          }
+
+          // record brief summary for diagnostics
+          pathSummaries.push({ nets: p.nets.slice(), edgeList: edgeList.map(matches => matches ? matches.map(m => ({ type: m.type, idx: m.idx })) : null), Rsum });
+
+          // Initialize node voltages for this path. nodeVoltages[0] is battery positive.
+          const nodeVoltages = [];
+          nodeVoltages[0] = Vb;
+          // Small debug helpers (keeps older debug output stable)
+          const Vsum = Vb;
+          const drivingV = Vb;
+
+          // Process components along the path
           for (let i = 0; i < edgeList.length; i++) {
             const matches = edgeList[i];
             if (!matches) continue;
-            const prevNet = p.nets[i];
-            const curNet = p.nets[i+1];
-            const batteryMatches = matches.filter(m => m && m.type === 'battery');
-            batteryMatches.forEach(bm => {
-              const bmeta = bm.meta || bm;
-              if (bmeta.nPlus === prevNet && bmeta.nMinus === curNet) {
-                Vsum -= Number(bmeta.V || 0);
-              } else if (bmeta.nPlus === curNet && bmeta.nMinus === prevNet) {
-                Vsum += Number(bmeta.V || 0);
-              }
-            });
-          }
-
-          const DEFAULT_R = 10;
-          if (Rsum <= 0) Rsum = DEFAULT_R;
-          const drivingV = (Math.abs(Vsum) > 1e-12) ? Vsum : (Number(vs.V || 0));
-          const I = Math.abs(drivingV) / Rsum;
-
-          let nodeVoltages = [];
-          nodeVoltages[0] = Number(Vsum || vs.V || 0);
-          
-          for (let i = 0; i < edgeList.length; i++) {
-            const matches = edgeList[i];
-            if (!matches) {
-              nodeVoltages[i+1] = nodeVoltages[i];
-              continue;
-            }
 
             const prevNet = p.nets[i];
             const curNet = p.nets[i+1];
@@ -202,12 +217,8 @@ window.SimpleSolver = (function() {
                   const R = Number(component.meta.R || 0);
                   Vdrop = I * R;
                 }
-                resistorResults.push({
-                  meta: componentMatches[0].meta,
-                  idx: componentMatches[0].idx,
-                  I,
-                  Vdrop
-                });
+                resistorResults.push({ meta: componentMatches[0].meta, idx: componentMatches[0].idx, I, Vdrop: Number(Vdrop.toFixed ? Vdrop.toFixed(6) : Vdrop) });
+                if (window && window.CT_DEBUG) try { console.debug('SimpleSolver: added resistorResult', { block: componentMatches[0].meta && componentMatches[0].meta.block && componentMatches[0].meta.block.dataset && componentMatches[0].meta.block.dataset.id, idx: componentMatches[0].idx, I, Vdrop }); } catch(e){}
               } else {
                 // Handle parallel components (both resistors and LEDs)
                 let Gsum = 0;
@@ -226,25 +237,17 @@ window.SimpleSolver = (function() {
                 // Process resistors
                 regularResistors.forEach(rm => {
                   const Rv = Number(rm.meta.R || 0) || 1e-12;
-                  resistorResults.push({
-                    meta: rm.meta,
-                    idx: rm.idx,
-                    I: I * (1 / Rv) / Gsum,
-                    Vdrop: baseVdrop
-                  });
+                  const rr = { meta: rm.meta, idx: rm.idx, I: Number((I * (1 / Rv) / Gsum).toFixed(6)), Vdrop: Number(baseVdrop.toFixed ? baseVdrop.toFixed(6) : baseVdrop) };
+                  resistorResults.push(rr);
+                  if (window && window.CT_DEBUG) try { console.debug('SimpleSolver: added parallel resistorResult', { block: rm.meta && rm.meta.block && rm.meta.block.dataset && rm.meta.block.dataset.id, idx: rm.idx, rr }); } catch(e){}
                 });
                 
                 // Process LEDs with forward voltage
                 leds.forEach(led => {
-                  const Vf = Number(
-                    (led.meta.block && led.meta.block.dataset.forwardVoltage) || 2
-                  );
-                  resistorResults.push({
-                    meta: led.meta,
-                    idx: led.idx,
-                    I: I / leds.length, // Split current among parallel LEDs
-                    Vdrop: Vf
-                  });
+                  const Vf = Number((led.meta.block && led.meta.block.dataset.forwardVoltage) || 2);
+                  const rr = { meta: led.meta, idx: led.idx, I: Number((I / leds.length).toFixed(6)), Vdrop: Number(Vf.toFixed ? Vf.toFixed(6) : Vf) };
+                  resistorResults.push(rr);
+                  if (window && window.CT_DEBUG) try { console.debug('SimpleSolver: added parallel LED result', { block: led.meta && led.meta.block && led.meta.block.dataset && led.meta.block.dataset.id, idx: led.idx, rr }); } catch(e){}
                 });
                 
                 // Use the larger of the voltage drops
@@ -283,6 +286,16 @@ window.SimpleSolver = (function() {
           }
         });
       });
+
+      // If we found paths but pushed no resistorResults, emit a diagnostic warning so user can see why
+      if (resistorResults.length === 0 && pathSummaries.length > 0) {
+        try {
+          console.warn('SimpleSolver: found paths but no resistorResults were produced. Diagnostics:', { pathSummaries, adjSummary: Array.from(adj.entries()).map(([k,v])=>[k, v.map(x=>({to:x.to, type:x.meta && x.meta.type}))]), resistors, vSources });
+        } catch(e) { console.warn('SimpleSolver: diagnostics failed', e); }
+      }
+      if (window && window.CT_DEBUG) {
+        try { console.debug('SimpleSolver: raw resistorResults count', resistorResults.length, resistorResults); } catch(e){}
+      }
 
       // Deduplicate results
       const rrMap = new Map();
