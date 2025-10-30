@@ -446,9 +446,8 @@ function createBlockInstance(type) {
     block.addEventListener('click', e => {
       if (e.target === block) {  // Only toggle if clicking the block itself, not connectors
         block.dataset.state = block.dataset.state === 'on' ? 'off' : 'on';
-        if (isBasicSimRunning || isSimRunning) {
-          evaluateCircuit();  // Re-run simulation when switch changes
-        }
+        // Always re-evaluate the circuit when a switch is toggled so UI updates immediately.
+        try { evaluateCircuit(true); } catch (err) { /* non-fatal */ }
       }
     });
   }
@@ -1187,9 +1186,15 @@ function evaluateCircuit(force = false) {
       // LEDs are now handled as resistors with meta.type='led' to simplify the circuit model
       resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||100, block: b, meta: {type:'led'} });
     } else if (b.dataset.type === 'switch') {
-      // Model switches as very low R when on, very high R when off so the simple solver can see them
+      // Model switches only when ON as a very low R; when OFF they are open (no entry)
       const isOn = b.dataset.state !== 'off';
-      resistors.push({ n1: na, n2: nb, R: isOn ? 1e-6 : 1e12, block: b, meta: {type: 'switch'} });
+      if (isOn) {
+        // Use a small but not vanishing resistance for ON switches so they don't numerically
+        // dominate conductance when splitting currents across forks. 1e-3 is a pragmatic choice
+        // (0.001 ohm) for demo topologies — large enough to avoid hogging, small enough to
+        // behave like a near-short visually.
+        resistors.push({ n1: na, n2: nb, R: 1e-3, block: b, meta: {type: 'switch'} });
+      }
     }
   });
 
@@ -1207,6 +1212,10 @@ function evaluateCircuit(force = false) {
       if (CT_DEBUG) console.debug('CT: SimpleSolver result', simpleRes);
       if (simpleRes && simpleRes.success) {
         // Apply results and exit early - keep behavior simple for demo mode
+        // Normalize small currents to zero before applying so switches/open paths don't leave residual tiny numbers
+        try {
+          (simpleRes.resistorResults || []).forEach(rr => { if (rr && Math.abs(rr.I || 0) < 1e-6) rr.I = 0; if (rr && Math.abs(rr.Vdrop || 0) < 1e-6) rr.Vdrop = 0; });
+        } catch(e){}
         applyBasicResults(simpleRes);
         return { success: true, source: 'simple' };
       }
@@ -1329,7 +1338,7 @@ function evaluateCircuit(force = false) {
               b.dataset.powered = 'true'; b.classList.add('powered');
               // attach estimated (or previously computed) voltage drop/current for debug tooltip
               try { if (!b.dataset.voltageDrop || Number(b.dataset.voltageDrop) === 0) b.dataset.voltageDrop = String(Vf); } catch(e){}
-              try { if (!b.dataset.current || Number(b.dataset.current) === 0) b.dataset.current = String(Math.max(I, 1e-4)); } catch(e){}
+              try { if (!b.dataset.current || Number(b.dataset.current) === 0) b.dataset.current = String(Math.max(I, 1e-3)); } catch(e){}
             }
             try { const maxVisualI = 0.02; const intensity = Math.min(1, Math.max(I, 1e-6) / maxVisualI); b.style.setProperty('--led-intensity', String(intensity)); } catch(e){}
       });
@@ -1465,9 +1474,12 @@ function buildCircuitModel(){
       // Battery positive terminal is on the right
       vSources.push({ nPlus: nb, nMinus: na, V: Number(b.dataset.voltage)||5, block: b });
     } else if (b.dataset.type === 'switch') {
-      // Switches are modeled as resistors: very low R when on, very high when off
+      // Switches are modeled as resistors when ON; when OFF they are open (no entry)
       const isOn = b.dataset.state !== 'off';
-      resistors.push({ n1: na, n2: nb, R: isOn ? 1e-6 : 1e12, block: b });
+      if (isOn) {
+        // Same small-but-not-vanishing ON resistance for switches created in this code path.
+        resistors.push({ n1: na, n2: nb, R: 1e-3, block: b });
+      }
     } else if (b.dataset.type === 'led') {
       // LEDs behave like resistors that light up when current flows (no polarity)
       resistors.push({ n1: na, n2: nb, R: Number(b.dataset.resistance)||100, block: b, meta: {type:'led'} });
